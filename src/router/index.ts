@@ -1,5 +1,6 @@
 import { createRouter,createWebHistory } from "vue-router";
 import LoginView from '../views/LoginView.vue'
+import TablesView from '../views/MesasView.vue'
 
 const router = createRouter({
     history:createWebHistory(),
@@ -8,6 +9,11 @@ const router = createRouter({
             path:'/',
             name:'Login',
             component:LoginView
+        },
+        {
+            path:'/tables',
+            name:'Tables',
+            component:TablesView
         }
     ]
 })
