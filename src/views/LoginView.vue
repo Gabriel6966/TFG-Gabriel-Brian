@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import {ref} from 'vue'
+import { useRouter } from 'vue-router'
 
-//Variables reactivas que se guardaran a la hora de que el usuario escriba algo
+//Variable reactive that are gonna be saved of what the user write
+const router = useRouter() //Initializating
 const email = ref('')
 const password= ref('')
 const error=ref('')
 
 const login=()=>{
-    error.value='' //Vaciamos
+    error.value='' //Empty value
 
     if(!email.value || !password.value){
-        error.value = 'Por favor, rellena todos los campos'
+        error.value = 'Please fill all the fields'
         return
     }
-    //Simulacion del login(luego se conectara con Firebase)
-    console.log('Intentando hacer login con:', email.value)
-    alert(`Login simulado para: ${email.value}`)
+    //Simulation of the login(later will be connected with Firebase)
+    console.log('Simulated succesful login')
+    router.push('/tables')
 }
 
 </script>
