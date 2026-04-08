@@ -1,7 +1,6 @@
 import { createRouter,createWebHistory } from "vue-router";
-import LoginView from '../views/LoginView.vue'
-import TablesView from '../views/MesasView.vue'
-import MenuView from '../views/MenuView.vue'
+//Global import
+const vistas = import.meta.glob('../views/*.vue')
 
 const router = createRouter({
     history:createWebHistory(),
@@ -9,17 +8,22 @@ const router = createRouter({
         {
             path:'/',
             name:'Login',
-            component:LoginView
+            component:vistas['../views/LoginView.vue']
         },
         {
             path:'/tables',
             name:'Tables',
-            component:TablesView
+            component:vistas['../views/MesasView.vue']
         },
         {
             path:'/menu/:id',
             name:'Menu',
-            component:MenuView
+            component:vistas['../views/MenuView.vue']
+        },
+        {
+            path:'/checkout',
+            name:'Checkout',
+            component:vistas['../views/CheckoutView.vue']
         }
     ]
 })
