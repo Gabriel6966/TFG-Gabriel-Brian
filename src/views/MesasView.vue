@@ -20,7 +20,7 @@ const tables = ref([
 //Function clicking a table
 const openTable = (table:any) =>{
     if(table.status === 'available'){
-        alert(`/menu/${table.nr}`)
+        router.push(`/menu/${table.nr}`)
         //Future navegation screen
     }else{
         alert(`Viewing current order for Table ${table.nr}`)
