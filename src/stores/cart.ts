@@ -32,6 +32,11 @@ export const CartStore= defineStore('cart',()=>{
             })
         }
     }
+
+    const removeFromCart =(productId:number)=>{
+        items.value=items.value.filter(item=>item.id!==productId)
+    }
+    
     
     const clear = ()=>{
         items.value=[]
@@ -39,5 +44,5 @@ export const CartStore= defineStore('cart',()=>{
     }
 
     //Check to export all so others files can read values
-    return{items,currentTableID,totalItems,totalPrice,addToCart,setTable,clear}
+    return{items,currentTableID,totalItems,totalPrice,addToCart,setTable,clear,removeFromCart}
 })

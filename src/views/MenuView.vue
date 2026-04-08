@@ -87,7 +87,7 @@ const addToOrder = (product: any) => {
 
     <div v-if="cart.totalItems>0" class="cart-summary">
       <div class="summary-info">
-        <span class="totla-label">TOTAL PRICE</span>
+        <span class="total-label">TOTAL PRICE</span>
         <span class="total-amount">€{{ cart.totalPrice.toFixed(2) }}</span>
       </div>
       <button class="send-btn" @click="router.push('/checkout')">
