@@ -140,18 +140,21 @@ const addToOrder = (product: any) => {
   display: none; 
 }
 .category-chip {
-  padding: 8px 16px;
-  border-radius: 20px; 
-  border: 1px solid #e5e7eb;
-  background-color: white; 
+  padding: 10px 20px;
+  border-radius: 25px; 
+  border: 1px solid transparent;
+  background-color: #f3f4f6; 
   color: #4b5563;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s; }
+  transition: all 0.3s ease; 
+}
 .category-chip.active {
   background-color: #1a1a1a; 
   color: white; 
-  border-color: #1a1a1a; }
+  transform: scale(1.05);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.15); 
+}
 .products-content { 
   padding: 20px; 
   max-width: 800px; 
@@ -164,14 +167,19 @@ const addToOrder = (product: any) => {
   }
 .product-card {
   background: white; 
-  border-radius: 12px; 
+  border-radius: 16px; 
   padding: 15px; 
   display: flex; 
   flex-direction: column; 
   align-items: center; 
   text-align: center; 
-  box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
-  }
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025); 
+  transition: transform 0.2s ease, box-shadow 0.2s ease;  
+}
+.product-card:hover{
+  transform: translateY(-4px);
+  box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+}
 .product-icon {
   font-size: 3rem; 
   margin-bottom: 10px; 
@@ -193,17 +201,21 @@ const addToOrder = (product: any) => {
   gap: 5px;
   width: 100%; 
   justify-content: center; 
-  padding: 8px; 
+  padding: 10px; 
   background-color: #f3f4f6; 
   border: none; 
-  border-radius: 8px; 
+  border-radius: 12px; 
   color: #1f2937; 
-  font-weight: 600; 
+  font-weight: 700; 
   cursor: pointer; 
-  transition: background-color 0.2s; 
+  transition: all 0.2s ease; 
 }
 .add-btn:hover { 
   background-color: #e5e7eb;
+}
+.add-btn:active{
+  transform: scale(0.95);
+  background-color: #d1d5db;
 }
 .cart-summary{
   position: fixed;
@@ -235,16 +247,23 @@ const addToOrder = (product: any) => {
   color: #1a1a1a;
 }
 .send-btn{
-  background-color: #006666;
+  background: linear-gradient(135deg, #006666 0%, #009999 100%);
   color: white;
   border: none;
-  padding: 12px 24px;
+  padding: 14px 28px;
   border-radius: 30px;
   font-weight: 700;
   display: flex;
   align-items: center;
   gap: 10px;
   cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.04);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
+.send-btn:active{
+  transform: scale(0.95);
+  box-shadow: 0 2px 8px rgba(0,102,102,0.03);
+}
+
 
 </style>
