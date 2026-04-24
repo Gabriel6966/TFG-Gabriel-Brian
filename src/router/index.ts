@@ -24,6 +24,16 @@ const router = createRouter({
             path:'/checkout',
             name:'Checkout',
             component:vistas['../views/CheckoutView.vue']
+        },
+        {
+            path:'/admin',
+            name:'Admin',
+            component:vistas['../views/AdminView.vue']
+        },
+        {
+            path:'/kitchen',
+            name:'Kitchen',
+            component:vistas['../views/CocinaView.vue']
         }
     ]
 })
