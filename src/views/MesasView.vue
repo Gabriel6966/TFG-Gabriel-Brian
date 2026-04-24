@@ -43,6 +43,7 @@ const openTable = (table:any) =>{
     <div class="tables-content">
       <h2 class="section-title">Select a Table</h2>
 
+      
       <main class="tables-grid">
         <button 
           v-for="table in tables" 
