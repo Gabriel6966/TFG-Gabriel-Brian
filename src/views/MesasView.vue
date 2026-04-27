@@ -1,27 +1,33 @@
 <script setup lang="ts">
-import {ref} from  'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+// 1. Importamos Firebase
+import { collection, onSnapshot, query, orderBy } from 'firebase/firestore'
+import { db } from '../firebase' 
 
 const router = useRouter()
-//Simulation of the data that gonna be in the Firebase
 
-const tables = ref([
-  { id: 1, nr: 1, status: 'available', capacity: 2 },
-  { id: 2, nr: 2, status: 'occupied', capacity: 4 },
-  { id: 3, nr: 3, status: 'available', capacity: 2 },
-  { id: 4, nr: 4, status: 'occupied', capacity: 4 },
-  { id: 5, nr: 5, status: 'available', capacity: 6 },
-  { id: 6, nr: 6, status: 'available', capacity: 2 },
-  { id: 7, nr: 7, status: 'occupied', capacity: 8 },
-  { id: 8, nr: 8, status: 'available', capacity: 2 },
-  { id: 9, nr: 9, status: 'available', capacity: 4 },
-  { id: 10, nr: 10, status: 'occupied', capacity: 2 }
-])
-//Function clicking a table
+const tables = ref<any[]>([])
+
+onMounted(() => {
+    const q = query(collection(db, 'mesas'), orderBy('numero'))
+
+    onSnapshot(q, (snapshot) => {
+        tables.value = snapshot.docs.map(doc => {
+            const data = doc.data()
+            return {
+                id: doc.id,
+                nr: data.numero,
+                capacity: data.capacidad,
+                status: data.estado === 'libre' ? 'available' : 'occupied'
+            }
+        })
+    })
+})
+
 const openTable = (table:any) =>{
     if(table.status === 'available'){
         router.push(`/menu/${table.nr}`)
-        //Future navegation screen
     }else{
         alert(`Viewing current order for Table ${table.nr}`)
     }
