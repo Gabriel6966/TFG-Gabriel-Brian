@@ -1,43 +1,43 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
+const { login } = useAuth()
 
-//variables del fromu
 const email = ref('')
 const password = ref('')
 const rememberMe = ref(false)
 const isLoading = ref(false)
 const errorMsg = ref('')
 
-//Funcion del login simulada
+// NUEVA VARIABLE: Controla si la contraseña está oculta (false) o visible (true)
+const showPassword = ref(false)
+
 const handleLogin = async () => {
   isLoading.value = true
   errorMsg.value = ''
 
-  setTimeout(() => {
-    isLoading.value = false
-    //logida del email
-    const userEmail = email.value.toLowerCase()
-    if (userEmail.includes('admin')) {
-      router.push('/admin')
-    } else if (userEmail.includes('cocin')) {
-      router.push('/kitchen')
-    } else {
-      router.push('/tables')
-    }
-  }, 1000)
-}
+  try {
+    const role = await login(email.value, password.value)
 
-//logica para acceso rapido
-const selectRole = (role: string) => {
-  if (role === 'admin') {
-    router.push('/admin') // Panel de control del jefe
-  } else if (role === 'camarero') {
-    router.push('/tables') // La pantalla de mesas que ya tienes hecha
-  } else if (role === 'cocinero') {
-    router.push('/kitchen') // La pantalla de comandas de la cocina
+    if (role === 'admin') router.replace('/admin')
+    else if (role === 'cocinero') router.replace('/kitchen')
+    else router.replace('/tables')
+
+  } catch (error: any) {
+    const firebaseErrors: Record<string, string> = {
+      'auth/invalid-credential':     'Email o contraseña incorrectos.',
+      'auth/user-not-found':         'No existe ningún usuario con ese email.',
+      'auth/wrong-password':         'Contraseña incorrecta.',
+      'auth/too-many-requests':      'Demasiados intentos. Espera unos minutos.',
+      'auth/network-request-failed': 'Sin conexión. Comprueba tu red.'
+    }
+    errorMsg.value = firebaseErrors[error.code] ?? 'Error inesperado. Inténtalo de nuevo.'
+
+  } finally {
+    isLoading.value = false
   }
 }
 </script>
@@ -51,7 +51,7 @@ const selectRole = (role: string) => {
 
       <div class="brand-content">
         <h1 class="logo-text">EasyOrder</h1>
-        <p class="subtitle">Gestion inteligente de pedidos en tiempo real</p>
+        <p class="subtitle">Gestión inteligente de pedidos en tiempo real</p>
 
         <div class="mockup-wrapper">
           <div class="tablet-mockup">
@@ -96,8 +96,15 @@ const selectRole = (role: string) => {
 
           <div class="input-group">
             <label>Contraseña</label>
-            <div class="input-wrapper">
-              <input type="password" v-model="password" placeholder="••••••••" required>
+            <!-- NUEVO: Añadimos password-wrapper -->
+            <div class="input-wrapper password-wrapper">
+              <!-- NUEVO: Cambia dinámicamente entre text y password -->
+              <input :type="showPassword ? 'text' : 'password'" v-model="password" placeholder="••••••••" required>
+              
+              <!-- NUEVO: Botón para alternar -->
+              <button type="button" class="btn-toggle-password" @click="showPassword = !showPassword">
+                {{ showPassword ? 'Ocultar' : 'Mostrar' }}
+              </button>
             </div>
           </div>
 
@@ -110,27 +117,15 @@ const selectRole = (role: string) => {
             <a href="#" class="forgot-link">¿Olvidaste tu contraseña?</a>
           </div>
 
+          <div v-if="errorMsg" class="error-msg">
+            {{ errorMsg }}
+          </div>
           <button type="submit" class="btn-primary" :disabled="isLoading">
             <span v-if="!isLoading">Iniciar sesion</span>
             <div v-else class="spinner"></div>
           </button>
         </form>
-
-        <div class="demo-divider">
-          <span>O usa acceso rapido</span>
-        </div>
-
-        <div class="demo-buttons">
-          <button class="btn-demo admin" @click="selectRole('admin')">
-            <span class="emoji">⚙️</span> Admin
-          </button>
-          <button class="btn-demo camarero" @click="selectRole('camarero')">
-            <span class="emoji">📝</span> Camarero
-          </button>
-          <button class="btn-demo cocinero" @click="selectRole('cocinero')">
-            <span class="emoji">👨‍🍳</span> Cocina
-          </button>
-        </div>
+      
       </div>
     </div>
   </div>
@@ -143,6 +138,18 @@ const selectRole = (role: string) => {
   box-sizing: border-box;
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+.error-msg {
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  margin-bottom: 16px;
+  text-align: center;
 }
 
 .login-layout {
@@ -425,6 +432,35 @@ h2 {
   border-color: #6366f1;
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1), inset 0 1px 2px rgba(0, 0, 0, 0.02);
 }
+
+/* NUEVO: Estilos para el contenedor y botón de la contraseña */
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-wrapper input {
+  padding-right: 80px;
+}
+
+.btn-toggle-password {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color 0.2s ease;
+}
+
+.btn-toggle-password:hover {
+  color: #4f46e5;
+}
+/* FIN NUEVO */
 
 .form-extras {
   display: flex;

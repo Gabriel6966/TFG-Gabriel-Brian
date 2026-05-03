@@ -1,62 +1,143 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import {
+  collection, onSnapshot, query,
+  orderBy, doc, updateDoc, addDoc, Timestamp
+} from 'firebase/firestore'
 import { db } from '../firebase'
 import { CartStore } from '../stores/cart'
+import { useAuth } from '../composables/useAuth'
 
 const cartStore = CartStore()
+const { currentUser, logout } = useAuth()
 
+// Estado reactivo
 const tables = ref<any[]>([])
 const productos = ref<any[]>([])
-const categoriaSeleccionada = ref('Burgers')
+const categorias = ref<string[]>([]) // ← NUEVO: categorías desde Firestore
 const mesaSeleccionada = ref<number | null>(null)
+const mesaSeleccionadaId = ref<string | null>(null)
+const categoriaSeleccionada = ref('')
+const isEnviando = ref(false)
+
+let unsubscribeMesas: (() => void) | null = null
+let unsubscribeProductos: (() => void) | null = null
 
 onMounted(() => {
+  // Listener 1: Mesas en tiempo real
   const qMesas = query(collection(db, 'mesas'), orderBy('numero'))
-  onSnapshot(qMesas, (snapshot) => {
-    tables.value = snapshot.docs.map(doc => {
-      const data = doc.data()
-      return {
-        id: doc.id,
-        nr: data.numero,
-        capacity: data.capacidad,
-        status: data.estado === 'libre' ? 'available' : 'occupied'
-      }
-    })
+  unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
+    tables.value = snapshot.docs.map(d => ({
+      id: d.id,
+      nr: d.data().numero,
+      capacity: d.data().capacidad ?? 4,
+      status: d.data().estado === 'libre' ? 'available' : 'occupied'
+    }))
   })
-  onSnapshot(collection(db, 'productos'), (snapshot) => {
-    productos.value = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+
+  // Listener 2: Productos en tiempo real
+  unsubscribeProductos = onSnapshot(collection(db, 'productos'), (snapshot) => {
+    productos.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+
+    // PUNTO 3 — Categorías dinámicas: las extraemos de los productos
+    // que existan en Firestore. Set elimina duplicados automáticamente.
+    // Si el admin añade un producto con categoría "Entrantes", aparece aquí sola.
+    const cats = [...new Set(productos.value.map((p: any) => p.category).filter(Boolean))] as string[]
+    categorias.value = cats
+
+    // Seleccionamos la primera categoría disponible si aún no hay ninguna activa
+    if (!categoriaSeleccionada.value && cats.length > 0) {
+      categoriaSeleccionada.value = cats[0]
+    }
   })
 })
-const openTable = (table: any) => {
-  // En vez de hacer router.push, ahora cargamos la mesa en la misma pantalla
-  mesaSeleccionada.value = table.nr
-  cartStore.setTable(table.nr)
 
-  if (table.status === 'occupied' && cartStore.items.length === 0) {
-    alert(`Mesa ${table.nr} ya está ocupada. Mostrando pedido actual...`)
-    // Aquí en el futuro cargaremos el pedido de la base de datos
+onUnmounted(() => {
+  unsubscribeMesas?.()
+  unsubscribeProductos?.()
+})
+
+// Productos filtrados por categoría activa
+const productosFiltrados = computed(() =>
+  productos.value.filter((p: any) => p.category === categoriaSeleccionada.value)
+)
+
+// Selecciona una mesa y la registra en el store
+const openTable = (table: any) => {
+  mesaSeleccionada.value = table.nr
+  mesaSeleccionadaId.value = table.id
+  cartStore.setTable(table.nr)
+}
+
+// PUNTO 2 — Liberar mesa: actualiza estado a 'libre' en Firestore
+// y limpia el estado local. La UI se actualiza sola por onSnapshot.
+const liberarMesa = async () => {
+  if (!mesaSeleccionadaId.value) return
+  if (!confirm(`¿Confirmas que la Mesa ${mesaSeleccionada.value} ha terminado su servicio?`)) return
+
+  try {
+    await updateDoc(doc(db, 'mesas', mesaSeleccionadaId.value), {
+      estado: 'libre'
+    })
+    // Limpiamos selección y carrito local
+    cartStore.clear()
+    mesaSeleccionada.value = null
+    mesaSeleccionadaId.value = null
+  } catch (error) {
+    console.error('Error al liberar la mesa:', error)
+    alert('No se pudo liberar la mesa. Comprueba tu conexión.')
   }
 }
 
-const productosFiltrados = computed(() => {
-  return productos.value.filter(p => p.category === categoriaSeleccionada.value)
-})
+// Envía la comanda a Firestore y marca la mesa como ocupada
+const enviarPedido = async () => {
+  if (cartStore.items.length === 0) return alert('El pedido está vacío')
+  if (!mesaSeleccionadaId.value || !currentUser.value) return
 
-const enviarPedido = () => {
-  if (cartStore.items.length === 0) return alert("El pedido está vacío")
-  alert(`¡Comanda enviada a cocina para la Mesa ${mesaSeleccionada.value}!`)
-  cartStore.clear()
+  isEnviando.value = true
+
+  try {
+    await addDoc(collection(db, 'comandas'), {
+      mesaId: mesaSeleccionadaId.value,
+      mesaNumero: mesaSeleccionada.value,
+      usuarioId: currentUser.value.uid,
+      fechaHora: Timestamp.now(),
+      estado: 'pendiente',
+      importeTotal: cartStore.totalPrice,
+      lineas: cartStore.items.map(item => ({
+        productoId: item.id,
+        nombre: item.name,
+        precio: item.price,
+        cantidad: item.quantity,
+        notas: item.notes ?? ''
+      }))
+    })
+
+    await updateDoc(doc(db, 'mesas', mesaSeleccionadaId.value), {
+      estado: 'ocupada'
+    })
+
+    cartStore.clear()
+    mesaSeleccionada.value = null
+    mesaSeleccionadaId.value = null
+
+  } catch (error) {
+    console.error('Error al enviar la comanda:', error)
+    alert('Error al enviar el pedido. Inténtalo de nuevo.')
+  } finally {
+    isEnviando.value = false
+  }
 }
 </script>
-
 <template>
   <div class="pos-container">
     <aside class="panel-mesas">
       <div class="panel-header">
-        <h1 class="brand-title">EasyOrder</h1>
-        <span class="status-indicator">● Live</span>
-      </div>
+  <h1 class="brand-title">EasyOrder</h1>
+        <span class="user-name">{{ currentUser?.email?.split('@')[0] }}</span>
+  <!-- NUEVO: botón de cierre de sesión -->
+  <button class="btn-logout-camarero" @click="logout">Cerrar sesión</button>
+</div>
 
       <div class="tables-grid">
         <button v-for="table in tables" :key="table.id" class="table-card"
@@ -79,7 +160,7 @@ const enviarPedido = () => {
 
     <main class="panel-productos">
       <nav class="categories-tabs">
-        <button v-for="cat in ['Burgers', 'Drinks', 'Desserts']" :key="cat"
+        <button v-for="cat in categorias" :key="cat"
           :class="{ active: categoriaSeleccionada === cat }" @click="categoriaSeleccionada = cat">
           {{ cat }}
         </button>
@@ -116,14 +197,26 @@ const enviarPedido = () => {
       </div>
 
       <div class="order-footer">
-        <div class="total-row">
-          <span>Total</span>
-          <span class="total-price">{{ cartStore.totalPrice.toFixed(2) }}€</span>
-        </div>
-        <button class="btn-send" @click="enviarPedido" :disabled="!mesaSeleccionada">
-          🚀 Enviar a Cocina
-        </button>
-      </div>
+  <div class="total-row">
+    <span>Total</span>
+    <span class="total-price">{{ cartStore.totalPrice.toFixed(2) }}€</span>
+  </div>
+
+
+  <button
+    class="btn-liberar"
+    @click="liberarMesa"
+    :disabled="!mesaSeleccionada"
+  >
+    ✓ Finalizar Servicio
+  </button>
+
+  <button class="btn-send" @click="enviarPedido" :disabled="!mesaSeleccionada || isEnviando">
+    <span v-if="!isEnviando">🚀 Enviar a Cocina</span>
+    <span v-else>Enviando...</span>
+  </button>
+</div>
+
     </section>
   </div>
 </template>
@@ -132,6 +225,48 @@ const enviarPedido = () => {
 * {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   box-sizing: border-box;
+}
+
+.btn-logout-camarero {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-logout-camarero:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: white;
+}
+
+.btn-liberar {
+  width: 100%;
+  padding: 12px;
+  background: transparent;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  color: #64748b;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 10px;
+  transition: all 0.2s;
+}
+
+.btn-liberar:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.btn-liberar:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .pos-container {
