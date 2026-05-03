@@ -6,6 +6,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
+import EmojiPicker from 'vue3-emoji-picker'
 
 // --- Interfaces TypeScript ---
 interface Mesa {
@@ -62,8 +63,12 @@ const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
 
-// NUEVO: Estado para el filtro de roles
+// Estado para el filtro de roles
 const filtroRol = ref('todos')
+
+// NUEVO: EMOJI PICKER - Estados para abrir/cerrar los teclados
+const mostrarSelectorCategoria = ref(false)
+const mostrarSelectorProducto = ref(false)
 
 // Formularios
 const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
@@ -155,11 +160,24 @@ const productosPorCategoria = computed(() => {
   return grupos
 })
 
-// NUEVO: Empleados filtrados por rol
+// Empleados filtrados por rol
 const empleadosFiltrados = computed(() => {
   if (filtroRol.value === 'todos') return empleados.value
   return empleados.value.filter(emp => emp.rol === filtroRol.value)
 })
+
+
+// NUEVO: EMOJI PICKER - Funciones para guardar la selección
+const onSelectEmojiCategoria = (emoji: any) => {
+  nuevaCategoria.value.icono = emoji.i
+  mostrarSelectorCategoria.value = false
+}
+
+const onSelectEmojiProducto = (emoji: any) => {
+  nuevoProducto.value.icon = emoji.i
+  mostrarSelectorProducto.value = false
+}
+
 
 // ── MESAS ──────────────────────────────────────────────────────────────────
 
@@ -298,7 +316,6 @@ const eliminarInvitacion = async (id: string) => {
   } catch { alert('Error al eliminar la invitación.') }
 }
 
-// NUEVO: Limpia masivamente los códigos usados
 const limpiarInvitacionesUsadas = async () => {
   const usadas = invitaciones.value.filter(i => i.estado === 'usada')
   if (usadas.length === 0) return alert('No hay códigos usados que limpiar.')
@@ -384,12 +401,8 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
         <div class="tables-grid">
           <div v-for="mesa in mesas" :key="mesa.id" class="mesa-card">
             <div class="mesa-card-header">
-              <input
-                type="text"
-                class="mesa-nombre-input"
-                :value="mesa.nombre || `Mesa ${mesa.numero}`"
-                @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)"
-              >
+              <input type="text" class="mesa-nombre-input" :value="mesa.nombre || `Mesa ${mesa.numero}`"
+                @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)">
               <div class="mesa-header-actions">
                 <span class="mesa-estado" :class="mesa.estado">{{ mesa.estado }}</span>
                 <button class="btn-eliminar-mesa" @click="eliminarMesa(mesa.id, mesa.numero)">✕</button>
@@ -397,12 +410,8 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
             </div>
             <div class="mesa-capacidad">
               <label>Capacidad</label>
-              <input
-                type="number"
-                :value="mesa.capacidad"
-                min="1" max="20"
-                @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)"
-              >
+              <input type="number" :value="mesa.capacidad" min="1" max="20"
+                @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)">
             </div>
           </div>
         </div>
@@ -425,10 +434,21 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                 <label>Nombre</label>
                 <input v-model="nuevaCategoria.nombre" placeholder="Ej: Entrantes">
               </div>
+
+              <!-- NUEVO: EMOJI PICKER EN CATEGORÍAS -->
               <div class="form-group">
                 <label>Icono (Emoji)</label>
-                <input v-model="nuevaCategoria.icono" placeholder="🥗">
+                <div class="emoji-selector-container">
+                  <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
+                    <span class="emoji-preview">{{ nuevaCategoria.icono }}</span> Cambiar Icono
+                  </button>
+                  <div v-if="mostrarSelectorCategoria" class="picker-popup">
+                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                  </div>
+                </div>
               </div>
+              <!-- FIN EMOJI PICKER -->
+
               <button @click="guardarCategoria" class="btn-primary btn-full">
                 + Añadir Categoría
               </button>
@@ -445,7 +465,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
               <div class="producto-info">
                 <span class="producto-name">{{ cat.nombre }}</span>
                 <span class="producto-cat">
-                  {{ productos.filter(p => p.category === cat.nombre).length }} productos
+                  {{productos.filter(p => p.category === cat.nombre).length}} productos
                 </span>
               </div>
               <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
@@ -486,10 +506,21 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                   </option>
                 </select>
               </div>
+
+              <!-- NUEVO: EMOJI PICKER EN PRODUCTOS -->
               <div class="form-group">
                 <label>Icono (Emoji)</label>
-                <input v-model="nuevoProducto.icon" placeholder="🍔">
+                <div class="emoji-selector-container">
+                  <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
+                    <span class="emoji-preview">{{ nuevoProducto.icon }}</span> Cambiar Icono
+                  </button>
+                  <div v-if="mostrarSelectorProducto" class="picker-popup">
+                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
+                  </div>
+                </div>
               </div>
+              <!-- FIN EMOJI PICKER -->
+
               <button @click="guardarProducto" class="btn-primary btn-full">
                 + Guardar en el Menú
               </button>
@@ -501,14 +532,10 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
             <div v-if="productos.length === 0" class="empty-productos">
               No hay productos todavía.
             </div>
-            <div
-              v-for="(platos, categoria) in productosPorCategoria"
-              :key="categoria"
-              class="categoria-grupo"
-            >
+            <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
               <div v-if="platos.length > 0" class="categoria-header">
                 <span class="categoria-icono">
-                  {{ categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️' }}
+                  {{categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️'}}
                 </span>
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
@@ -549,11 +576,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
               <div class="product-form" style="margin-top: 18px;">
                 <div class="form-group">
                   <label>Email del empleado</label>
-                  <input
-                    type="email"
-                    v-model="nuevaInvitacion.email"
-                    placeholder="empleado@restaurante.com"
-                  >
+                  <input type="email" v-model="nuevaInvitacion.email" placeholder="empleado@restaurante.com">
                 </div>
                 <div class="form-group">
                   <label>Rol asignado</label>
@@ -563,11 +586,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                     <option value="admin">⚙️ Admin</option>
                   </select>
                 </div>
-                <button
-                  @click="crearInvitacion"
-                  class="btn-primary btn-full"
-                  :disabled="isCreandoInvitacion"
-                >
+                <button @click="crearInvitacion" class="btn-primary btn-full" :disabled="isCreandoInvitacion">
                   {{ isCreandoInvitacion ? 'Generando...' : '🔑 Generar Código' }}
                 </button>
               </div>
@@ -575,14 +594,10 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 
             <!-- Códigos generados -->
             <div class="product-form-card" style="margin-top: 20px;">
-              <!-- NUEVO: Header flexible para meter el botón de limpiar al lado del título -->
               <div class="section-header-flex">
                 <h3 style="margin-bottom: 0;">Códigos generados</h3>
-                <button 
-                  class="btn-icon-text" 
-                  @click="limpiarInvitacionesUsadas" 
-                  title="Borra todos los códigos que ya han sido usados"
-                >
+                <button class="btn-icon-text" @click="limpiarInvitacionesUsadas"
+                  title="Borra todos los códigos que ya han sido usados">
                   🧹 Limpiar usados
                 </button>
               </div>
@@ -598,11 +613,8 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                 <span class="codigo-badge" :class="inv.estado">
                   {{ inv.estado === 'pendiente' ? inv.codigo : '✓ Usada' }}
                 </span>
-                <button
-                  v-if="inv.estado === 'pendiente'"
-                  class="btn-eliminar"
-                  @click="eliminarInvitacion(inv.id)"
-                >✕</button>
+                <button v-if="inv.estado === 'pendiente'" class="btn-eliminar"
+                  @click="eliminarInvitacion(inv.id)">✕</button>
               </div>
             </div>
 
@@ -611,8 +623,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
           <!-- Columna derecha: lista de empleados registrados -->
           <div class="productos-lista">
             <h3>👥 Equipo registrado</h3>
-            
-            <!-- NUEVO: Botones de filtro por roles -->
+
             <div class="filtros-rol" v-if="empleados.length > 0">
               <button :class="{ active: filtroRol === 'todos' }" @click="filtroRol = 'todos'">Todos</button>
               <button :class="{ active: filtroRol === 'admin' }" @click="filtroRol = 'admin'">Admins</button>
@@ -624,7 +635,6 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
               No hay empleados que coincidan con este filtro.
             </div>
 
-            <!-- Usamos empleadosFiltrados en lugar de empleados -->
             <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
               <div class="empleado-avatar">
                 {{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}
@@ -634,12 +644,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                 <span class="producto-cat truncate">{{ emp.email }}</span>
               </div>
               <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
-              
-              <button 
-                class="activo-toggle" 
-                :class="emp.activo ? 'activo' : 'inactivo'"
-                @click="toggleEstadoEmpleado(emp.id, emp.activo)"
-              >
+
+              <button class="activo-toggle" :class="emp.activo ? 'activo' : 'inactivo'"
+                @click="toggleEstadoEmpleado(emp.id, emp.activo)">
                 {{ emp.activo ? '● Activo' : '○ Inactivo' }}
               </button>
 
@@ -655,6 +662,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 </template>
 
 <style scoped>
+@import 'vue3-emoji-picker/css';
 * {
   box-sizing: border-box;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -689,7 +697,11 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   margin-bottom: 8px;
 }
 
-.sidebar-brand h2 { font-size: 1.15rem; font-weight: 800; color: white; }
+.sidebar-brand h2 {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: white;
+}
 
 .admin-tag {
   background: #4f46e5;
@@ -719,8 +731,16 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: all 0.2s;
 }
 
-.sidebar-nav button:hover { background: #334155; color: white; }
-.sidebar-nav button.active { background: #4f46e5; color: white; font-weight: 600; }
+.sidebar-nav button:hover {
+  background: #334155;
+  color: white;
+}
+
+.sidebar-nav button.active {
+  background: #4f46e5;
+  color: white;
+  font-weight: 600;
+}
 
 .sidebar-footer {
   display: flex;
@@ -751,7 +771,11 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: all 0.2s;
 }
 
-.btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
+.btn-logout:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: white;
+}
 
 /* ── CONTENT ── */
 .content {
@@ -769,9 +793,24 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   gap: 16px;
 }
 
-.page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
-.page-subtitle { color: #64748b; font-size: 0.9rem; margin-top: 4px; }
-.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.page-header h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.page-subtitle {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 
 .input-num {
   width: 80px;
@@ -795,9 +834,19 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: background 0.2s;
 }
 
-.btn-primary:hover:not(:disabled) { background: #4338ca; }
-.btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
-.btn-full { width: 100%; padding: 14px; }
+.btn-primary:hover:not(:disabled) {
+  background: #4338ca;
+}
+
+.btn-primary:disabled {
+  background: #a5b4fc;
+  cursor: not-allowed;
+}
+
+.btn-full {
+  width: 100%;
+  padding: 14px;
+}
 
 .btn-danger {
   background: #dc2626;
@@ -811,7 +860,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: background 0.2s;
 }
 
-.btn-danger:hover { background: #b91c1c; }
+.btn-danger:hover {
+  background: #b91c1c;
+}
 
 /* ── MESAS ── */
 .tables-grid {
@@ -824,7 +875,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   background: white;
   border-radius: 12px;
   padding: 16px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -852,8 +903,15 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   outline: none;
 }
 
-.mesa-nombre-input:hover { border-color: #e2e8f0; background: #f8fafc; }
-.mesa-nombre-input:focus { border-color: #4f46e5; background: white; }
+.mesa-nombre-input:hover {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+.mesa-nombre-input:focus {
+  border-color: #4f46e5;
+  background: white;
+}
 
 .mesa-header-actions {
   display: flex;
@@ -863,15 +921,25 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 .btn-eliminar-mesa {
-  width: 24px; height: 24px;
-  background: #fee2e2; color: #dc2626;
-  border: none; border-radius: 50%;
-  cursor: pointer; font-weight: 700;
-  font-size: 0.75rem; transition: all 0.2s;
-  display: flex; align-items: center; justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.btn-eliminar-mesa:hover { background: #dc2626; color: white; }
+.btn-eliminar-mesa:hover {
+  background: #dc2626;
+  color: white;
+}
 
 .mesa-estado {
   font-size: 0.75rem;
@@ -880,14 +948,31 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-radius: 20px;
 }
 
-.mesa-estado.libre { background: #dcfce7; color: #16a34a; }
-.mesa-estado.ocupada { background: #fee2e2; color: #dc2626; }
+.mesa-estado.libre {
+  background: #dcfce7;
+  color: #16a34a;
+}
 
-.mesa-capacidad { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #64748b; }
+.mesa-estado.ocupada {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.mesa-capacidad {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
 .mesa-capacidad input {
-  width: 56px; padding: 6px 8px;
-  border: 1px solid #e2e8f0; border-radius: 6px;
-  font-size: 0.9rem; text-align: center;
+  width: 56px;
+  padding: 6px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  text-align: center;
 }
 
 /* ── LAYOUT COMPARTIDO ── */
@@ -903,7 +988,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-radius: 14px;
   padding: 24px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   position: sticky;
   top: 0;
 }
@@ -922,9 +1007,23 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   line-height: 1.5;
 }
 
-.product-form { display: flex; flex-direction: column; gap: 14px; }
-.form-group { display: flex; flex-direction: column; gap: 6px; }
-.form-group label { font-size: 0.82rem; font-weight: 600; color: #475569; }
+.product-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #475569;
+}
 
 .form-group input,
 .form-group select {
@@ -941,8 +1040,55 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 .form-group input:focus,
 .form-group select:focus {
   border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
+
+/* ── NUEVO: CSS PARA EL SELECTOR DE EMOJIS ── */
+.emoji-selector-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.btn-emoji {
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  font-size: 0.95rem;
+  color: #475569;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.btn-emoji:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.emoji-preview {
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.picker-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  margin-top: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  /* Esto asegura que no se salga de la pantalla en pantallas pequeñas */
+  max-width: 100%;
+}
+
+/* ── FIN EMOJI CSS ── */
 
 /* ── CARTA ── */
 .productos-lista {
@@ -950,12 +1096,19 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-radius: 14px;
   padding: 24px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
-.empty-productos { color: #94a3b8; text-align: center; padding: 40px 0; font-size: 0.95rem; }
+.empty-productos {
+  color: #94a3b8;
+  text-align: center;
+  padding: 40px 0;
+  font-size: 0.95rem;
+}
 
-.categoria-grupo { margin-bottom: 8px; }
+.categoria-grupo {
+  margin-bottom: 8px;
+}
 
 .categoria-header {
   display: flex;
@@ -967,7 +1120,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   margin-top: 16px;
 }
 
-.categoria-icono { font-size: 1.2rem; }
+.categoria-icono {
+  font-size: 1.2rem;
+}
 
 .categoria-nombre {
   font-weight: 700;
@@ -995,25 +1150,61 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-bottom: 1px solid #f8fafc;
 }
 
-.producto-row:last-child { border-bottom: none; }
+.producto-row:last-child {
+  border-bottom: none;
+}
 
-.producto-icon { font-size: 1.5rem; }
-.producto-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.producto-name { font-weight: 600; color: #0f172a; font-size: 0.95rem; }
-.producto-cat { font-size: 0.78rem; color: #94a3b8; }
-.producto-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; min-width: 60px; text-align: right; }
+.producto-icon {
+  font-size: 1.5rem;
+}
+
+.producto-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.producto-name {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+
+.producto-cat {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.producto-price {
+  font-weight: 700;
+  color: #4f46e5;
+  font-size: 0.95rem;
+  min-width: 60px;
+  text-align: right;
+}
 
 .btn-eliminar {
-  width: 30px; height: 30px;
-  background: #fee2e2; color: #dc2626;
-  border: none; border-radius: 50%;
-  cursor: pointer; font-weight: 700;
-  font-size: 0.85rem; transition: all 0.2s;
-  display: flex; align-items: center; justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 
-.btn-eliminar:hover { background: #dc2626; color: white; }
+.btn-eliminar:hover {
+  background: #dc2626;
+  color: white;
+}
 
 /* ── EMPLEADOS ── */
 .empleados-layout {
@@ -1037,7 +1228,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-bottom: 1px solid #f1f5f9;
 }
 
-.empleado-row:last-child { border-bottom: none; }
+.empleado-row:last-child {
+  border-bottom: none;
+}
 
 .empleado-avatar {
   width: 38px;
@@ -1062,9 +1255,20 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   flex-shrink: 0;
 }
 
-.rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
-.rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
-.rol-badge.cocinero { background: #fef3c7; color: #b45309; }
+.rol-badge.admin {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.rol-badge.camarero {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.rol-badge.cocinero {
+  background: #fef3c7;
+  color: #b45309;
+}
 
 /* ── INVITACIONES ── */
 .invitacion-row {
@@ -1075,7 +1279,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-bottom: 1px solid #f1f5f9;
 }
 
-.invitacion-row:last-child { border-bottom: none; }
+.invitacion-row:last-child {
+  border-bottom: none;
+}
 
 .codigo-badge {
   font-family: 'Courier New', monospace;
@@ -1099,8 +1305,15 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 /* ── NUEVOS ESTILOS PARA UX EMPLEADOS ── */
-.min-width-0 { min-width: 0; }
-.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.min-width-0 {
+  min-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .activo-toggle {
   border: none;
@@ -1112,9 +1325,20 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: filter 0.2s;
   flex-shrink: 0;
 }
-.activo-toggle.activo { background: #dcfce7; color: #16a34a; }
-.activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
-.activo-toggle:hover { filter: brightness(0.95); }
+
+.activo-toggle.activo {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.activo-toggle.inactivo {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.activo-toggle:hover {
+  filter: brightness(0.95);
+}
 
 /* Filtros de rol */
 .filtros-rol {
@@ -1171,12 +1395,22 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 @media (max-width: 1100px) {
-  .empleados-layout { grid-template-columns: 1fr; }
+  .empleados-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
-  .productos-layout { grid-template-columns: 1fr; }
-  .product-form-card { position: static; }
-  .content { padding: 20px; }
+  .productos-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .product-form-card {
+    position: static;
+  }
+
+  .content {
+    padding: 20px;
+  }
 }
 </style>
