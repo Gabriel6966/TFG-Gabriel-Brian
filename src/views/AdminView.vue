@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, addDoc, onSnapshot,
-  query, orderBy, deleteDoc, doc, updateDoc
+  query, orderBy, where, deleteDoc, doc, updateDoc
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
@@ -11,7 +11,7 @@ import { useAuth } from '../composables/useAuth'
 interface Mesa {
   id: string
   numero: number
-  nombre?: string // NUEVO: Permite guardar un nombre personalizado opcional
+  nombre?: string
   estado: 'libre' | 'ocupada'
   capacidad: number
 }
@@ -30,49 +30,107 @@ interface Categoria {
   icono: string
 }
 
-const { logout } = useAuth()
+interface Invitacion {
+  id: string
+  email: string
+  rol: 'admin' | 'camarero' | 'cocinero'
+  codigo: string
+  estado: 'pendiente' | 'usada'
+  localId: string
+  localNombre: string
+  creadoEn: any
+}
+
+interface Empleado {
+  id: string
+  nombre: string
+  email: string
+  rol: 'admin' | 'camarero' | 'cocinero'
+  activo: boolean
+  localId: string
+}
+
+const { logout, localId } = useAuth()
 
 const currentTab = ref('mesas')
 const mesas = ref<Mesa[]>([])
 const productos = ref<Producto[]>([])
 const categorias = ref<Categoria[]>([])
+const invitaciones = ref<Invitacion[]>([])
+const empleados = ref<Empleado[]>([])
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
+const isCreandoInvitacion = ref(false)
 
-// Formulario nuevo producto
+// NUEVO: Estado para el filtro de roles
+const filtroRol = ref('todos')
+
+// Formularios
 const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
-
-// Formulario nueva categoría
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️' })
+const nuevaInvitacion = ref({
+  email: '',
+  rol: 'camarero' as 'admin' | 'camarero' | 'cocinero'
+})
 
 // Limpiadores de listeners
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 let unsubscribeCategorias: (() => void) | null = null
+let unsubscribeInvitaciones: (() => void) | null = null
+let unsubscribeEmpleados: (() => void) | null = null
 
 onMounted(() => {
+  if (!localId.value) return
+
   // Listener mesas
-  const qMesas = query(collection(db, 'mesas'), orderBy('numero'))
+  const qMesas = query(
+    collection(db, `locales/${localId.value}/mesas`),
+    orderBy('numero')
+  )
   unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
     mesas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Mesa[]
   })
 
-  // Listener productos ordenados por categoría
-  const qProductos = query(collection(db, 'productos'), orderBy('category'))
+  // Listener productos
+  const qProductos = query(
+    collection(db, `locales/${localId.value}/productos`),
+    orderBy('category')
+  )
   unsubscribeProductos = onSnapshot(qProductos, (snapshot) => {
     productos.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Producto[]
   })
 
-  // Listener categorías — colección propia en Firestore
-  // Así el admin puede añadir/eliminar categorías sin tocar código
-  const qCategorias = query(collection(db, 'categorias'), orderBy('nombre'))
+  // Listener categorías
+  const qCategorias = query(
+    collection(db, `locales/${localId.value}/categorias`),
+    orderBy('nombre')
+  )
   unsubscribeCategorias = onSnapshot(qCategorias, (snapshot) => {
     categorias.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Categoria[]
-
-    // Si el formulario no tiene categoría seleccionada, ponemos la primera disponible
     if (!nuevoProducto.value.category && categorias.value.length > 0) {
       nuevoProducto.value.category = categorias.value[0].nombre
     }
+  })
+
+  // Listener invitaciones
+  const qInv = query(
+    collection(db, 'invitaciones'),
+    where('localId', '==', localId.value),
+    orderBy('creadoEn', 'desc')
+  )
+  unsubscribeInvitaciones = onSnapshot(qInv, (snapshot) => {
+    invitaciones.value = snapshot.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    })) as Invitacion[]
+  })
+
+  // Listener empleados
+  unsubscribeEmpleados = onSnapshot(collection(db, 'usuarios'), (snapshot) => {
+    empleados.value = snapshot.docs
+      .map(d => ({ id: d.id, ...d.data() } as Empleado))
+      .filter(u => u.localId === localId.value)
   })
 })
 
@@ -80,17 +138,16 @@ onUnmounted(() => {
   unsubscribeMesas?.()
   unsubscribeProductos?.()
   unsubscribeCategorias?.()
+  unsubscribeInvitaciones?.()
+  unsubscribeEmpleados?.()
 })
 
-// Productos agrupados por categoría para mostrar la carta ordenada.
-// computed() devuelve un objeto donde cada clave es una categoría
-// y el valor es el array de productos que pertenecen a ella.
+// Productos agrupados por categoría
 const productosPorCategoria = computed(() => {
   const grupos: Record<string, Producto[]> = {}
   for (const cat of categorias.value) {
     grupos[cat.nombre] = productos.value.filter(p => p.category === cat.nombre)
   }
-  // Productos sin categoría reconocida van a "Otros"
   const sinCategoria = productos.value.filter(
     p => !categorias.value.some(c => c.nombre === p.category)
   )
@@ -98,15 +155,22 @@ const productosPorCategoria = computed(() => {
   return grupos
 })
 
-// ── MESAS ──────────────────────────────────────────────────
+// NUEVO: Empleados filtrados por rol
+const empleadosFiltrados = computed(() => {
+  if (filtroRol.value === 'todos') return empleados.value
+  return empleados.value.filter(emp => emp.rol === filtroRol.value)
+})
+
+// ── MESAS ──────────────────────────────────────────────────────────────────
 
 const generarMesas = async () => {
+  if (!localId.value) return
   isLoading.value = true
   try {
     const ultimaNumero = mesas.value.length > 0
       ? mesas.value[mesas.value.length - 1].numero : 0
     for (let i = 1; i <= cantidadMesas.value; i++) {
-      await addDoc(collection(db, 'mesas'), {
+      await addDoc(collection(db, `locales/${localId.value}/mesas`), {
         numero: ultimaNumero + i,
         estado: 'libre',
         capacidad: 4
@@ -117,69 +181,71 @@ const generarMesas = async () => {
 }
 
 const resetearMesas = async () => {
-  if (!confirm('¿Borrar TODAS las mesas? Esta acción no se puede deshacer.')) return
+  if (!localId.value || !confirm('¿Borrar TODAS las mesas? Esta acción no se puede deshacer.')) return
   try {
-    await Promise.all(mesas.value.map(m => deleteDoc(doc(db, 'mesas', m.id))))
+    await Promise.all(mesas.value.map(m =>
+      deleteDoc(doc(db, `locales/${localId.value}/mesas`, m.id))
+    ))
   } catch { alert('Error al borrar las mesas.') }
 }
 
-// NUEVO: Eliminar una sola mesa
 const eliminarMesa = async (id: string, numero: number) => {
-  if (!confirm(`¿Eliminar la mesa ${numero}?`)) return
+  if (!localId.value || !confirm(`¿Eliminar la Mesa ${numero}?`)) return
   try {
-    await deleteDoc(doc(db, 'mesas', id))
+    await deleteDoc(doc(db, `locales/${localId.value}/mesas`, id))
   } catch { alert('Error al eliminar la mesa.') }
 }
 
-// NUEVO: Cambiar nombre de la mesa
-const cambiarNombreMesa = async (id: string, nuevoNombre: string) => {
-  try {
-    await updateDoc(doc(db, 'mesas', id), { nombre: nuevoNombre })
-  } catch { alert('Error al cambiar el nombre de la mesa.') }
-}
-
 const cambiarCapacidad = async (id: string, nuevaCap: number) => {
-  await updateDoc(doc(db, 'mesas', id), { capacidad: nuevaCap })
+  if (!localId.value) return
+  await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { capacidad: nuevaCap })
 }
 
-// ── CATEGORÍAS ─────────────────────────────────────────────
+const cambiarNombreMesa = async (id: string, nuevoNombre: string) => {
+  if (!localId.value) return
+  await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { nombre: nuevoNombre })
+}
+
+// ── CATEGORÍAS ─────────────────────────────────────────────────────────────
 
 const guardarCategoria = async () => {
+  if (!localId.value) return
   if (!nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
-  // Evitamos duplicados comprobando si ya existe
   const yaExiste = categorias.value.some(
     c => c.nombre.toLowerCase() === nuevaCategoria.value.nombre.toLowerCase()
   )
   if (yaExiste) return alert('Esa categoría ya existe.')
-
   try {
-    await addDoc(collection(db, 'categorias'), { ...nuevaCategoria.value })
+    await addDoc(collection(db, `locales/${localId.value}/categorias`), {
+      ...nuevaCategoria.value
+    })
     nuevaCategoria.value = { nombre: '', icono: '🍽️' }
   } catch { alert('Error al crear la categoría.') }
 }
 
 const eliminarCategoria = async (id: string, nombre: string) => {
-  // Advertimos si hay productos que usan esa categoría
-  const productosAfectados = productos.value.filter(p => p.category === nombre).length
-  const msg = productosAfectados > 0
-    ? `¿Eliminar "${nombre}"? Hay ${productosAfectados} productos con esta categoría que quedarán sin clasificar.`
+  if (!localId.value) return
+  const afectados = productos.value.filter(p => p.category === nombre).length
+  const msg = afectados > 0
+    ? `¿Eliminar "${nombre}"? ${afectados} productos quedarán sin categoría.`
     : `¿Eliminar la categoría "${nombre}"?`
   if (!confirm(msg)) return
-
   try {
-    await deleteDoc(doc(db, 'categorias', id))
+    await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id))
   } catch { alert('Error al eliminar la categoría.') }
 }
 
-// ── PRODUCTOS ──────────────────────────────────────────────
+// ── PRODUCTOS ──────────────────────────────────────────────────────────────
 
 const guardarProducto = async () => {
-  if (!nuevoProducto.value.name.trim()) return alert('El nombre del plato es obligatorio.')
+  if (!localId.value) return
+  if (!nuevoProducto.value.name.trim()) return alert('El nombre es obligatorio.')
   if (nuevoProducto.value.price <= 0) return alert('El precio debe ser mayor que 0.')
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
-
   try {
-    await addDoc(collection(db, 'productos'), { ...nuevoProducto.value })
+    await addDoc(collection(db, `locales/${localId.value}/productos`), {
+      ...nuevoProducto.value
+    })
     nuevoProducto.value = {
       name: '',
       price: 0,
@@ -190,10 +256,78 @@ const guardarProducto = async () => {
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
-  if (!confirm(`¿Eliminar "${nombre}" del menú?`)) return
+  if (!localId.value || !confirm(`¿Eliminar "${nombre}"?`)) return
   try {
-    await deleteDoc(doc(db, 'productos', id))
+    await deleteDoc(doc(db, `locales/${localId.value}/productos`, id))
   } catch { alert('Error al eliminar el producto.') }
+}
+
+// ── INVITACIONES ───────────────────────────────────────────────────────────
+
+const generarCodigo = (): string => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  return Array.from(
+    { length: 8 },
+    () => chars[Math.floor(Math.random() * chars.length)]
+  ).join('')
+}
+
+const crearInvitacion = async () => {
+  if (!localId.value) return
+  if (!nuevaInvitacion.value.email.trim()) return alert('El email es obligatorio.')
+  isCreandoInvitacion.value = true
+  try {
+    await addDoc(collection(db, 'invitaciones'), {
+      email: nuevaInvitacion.value.email.trim().toLowerCase(),
+      rol: nuevaInvitacion.value.rol,
+      codigo: generarCodigo(),
+      estado: 'pendiente',
+      localId: localId.value,
+      localNombre: localId.value,
+      creadoEn: new Date()
+    })
+    nuevaInvitacion.value = { email: '', rol: 'camarero' }
+  } catch { alert('Error al crear la invitación.') }
+  finally { isCreandoInvitacion.value = false }
+}
+
+const eliminarInvitacion = async (id: string) => {
+  if (!confirm('¿Eliminar esta invitación? El código dejará de ser válido.')) return
+  try {
+    await deleteDoc(doc(db, 'invitaciones', id))
+  } catch { alert('Error al eliminar la invitación.') }
+}
+
+// NUEVO: Limpia masivamente los códigos usados
+const limpiarInvitacionesUsadas = async () => {
+  const usadas = invitaciones.value.filter(i => i.estado === 'usada')
+  if (usadas.length === 0) return alert('No hay códigos usados que limpiar.')
+  if (!confirm(`¿Borrar los ${usadas.length} códigos que ya han sido utilizados?`)) return
+
+  try {
+    await Promise.all(usadas.map(inv => deleteDoc(doc(db, 'invitaciones', inv.id))))
+  } catch {
+    alert('Error al limpiar las invitaciones usadas.')
+  }
+}
+
+// ── EMPLEADOS ──────────────────────────────────────────────────────────────
+
+const toggleEstadoEmpleado = async (id: string, estadoActual: boolean) => {
+  try {
+    await updateDoc(doc(db, 'usuarios', id), {
+      activo: !estadoActual
+    })
+  } catch {
+    alert('Error al actualizar el estado del empleado.')
+  }
+}
+
+const eliminarEmpleado = async (id: string, nombre: string) => {
+  if (!confirm(`¿Eliminar a "${nombre}"? Perderá el acceso al sistema inmediatamente.`)) return
+  try {
+    await deleteDoc(doc(db, 'usuarios', id))
+  } catch { alert('Error al eliminar el empleado.') }
 }
 </script>
 
@@ -217,9 +351,15 @@ const eliminarProducto = async (id: string, nombre: string) => {
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">
           🍔 Menú
         </button>
+        <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">
+          👥 Empleados
+        </button>
       </nav>
 
-      <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
+      <div class="sidebar-footer">
+        <div class="local-info">🏢 {{ localId }}</div>
+        <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
+      </div>
     </aside>
 
     <!-- CONTENIDO PRINCIPAL -->
@@ -243,24 +383,18 @@ const eliminarProducto = async (id: string, nombre: string) => {
 
         <div class="tables-grid">
           <div v-for="mesa in mesas" :key="mesa.id" class="mesa-card">
-            
             <div class="mesa-card-header">
-              <!-- NUEVO: Input para el nombre de la mesa editable (por defecto "Mesa X") -->
-              <input 
-                type="text" 
+              <input
+                type="text"
                 class="mesa-nombre-input"
                 :value="mesa.nombre || `Mesa ${mesa.numero}`"
                 @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)"
-                title="Haz clic para editar el nombre"
               >
-              
               <div class="mesa-header-actions">
                 <span class="mesa-estado" :class="mesa.estado">{{ mesa.estado }}</span>
-                <!-- NUEVO: Botón para borrar la mesa individual -->
-                <button class="btn-eliminar-mesa" @click="eliminarMesa(mesa.id, mesa.numero)" title="Eliminar mesa">✕</button>
+                <button class="btn-eliminar-mesa" @click="eliminarMesa(mesa.id, mesa.numero)">✕</button>
               </div>
             </div>
-
             <div class="mesa-capacidad">
               <label>Capacidad</label>
               <input
@@ -279,13 +413,11 @@ const eliminarProducto = async (id: string, nombre: string) => {
         <div class="page-header">
           <div>
             <h1>Gestión de Categorías</h1>
-            <p class="page-subtitle">{{ categorias.length }} categorías en la carta</p>
+            <p class="page-subtitle">{{ categorias.length }} categorías activas</p>
           </div>
         </div>
 
         <div class="productos-layout">
-
-          <!-- Formulario nueva categoría -->
           <div class="product-form-card">
             <h3>Nueva categoría</h3>
             <div class="product-form">
@@ -303,11 +435,10 @@ const eliminarProducto = async (id: string, nombre: string) => {
             </div>
           </div>
 
-          <!-- Lista de categorías existentes -->
           <div class="productos-lista">
             <h3>Categorías actuales</h3>
             <div v-if="categorias.length === 0" class="empty-productos">
-              No hay categorías todavía. Crea una para empezar.
+              No hay categorías todavía.
             </div>
             <div v-for="cat in categorias" :key="cat.id" class="producto-row">
               <span class="producto-icon">{{ cat.icono }}</span>
@@ -320,7 +451,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
               <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
             </div>
           </div>
-
         </div>
       </div>
 
@@ -334,12 +464,10 @@ const eliminarProducto = async (id: string, nombre: string) => {
         </div>
 
         <div class="productos-layout">
-
-          <!-- Formulario nuevo producto -->
           <div class="product-form-card">
             <h3>Añadir nuevo plato</h3>
-            <div v-if="categorias.length === 0" class="empty-productos" style="padding: 20px 0">
-              ⚠️ Primero crea al menos una categoría en la pestaña "Categorías".
+            <div v-if="categorias.length === 0" class="empty-productos" style="padding: 16px 0">
+              ⚠️ Primero crea una categoría en la pestaña "Categorías".
             </div>
             <div v-else class="product-form">
               <div class="form-group">
@@ -348,12 +476,10 @@ const eliminarProducto = async (id: string, nombre: string) => {
               </div>
               <div class="form-group">
                 <label>Precio (€)</label>
-                <input type="number" v-model="nuevoProducto.price"
-                  placeholder="0.00" step="0.01" min="0">
+                <input type="number" v-model="nuevoProducto.price" step="0.01" min="0">
               </div>
               <div class="form-group">
                 <label>Categoría</label>
-                <!-- El select se genera dinámicamente desde Firestore -->
                 <select v-model="nuevoProducto.category">
                   <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">
                     {{ cat.icono }} {{ cat.nombre }}
@@ -370,20 +496,16 @@ const eliminarProducto = async (id: string, nombre: string) => {
             </div>
           </div>
 
-          <!-- Carta agrupada por categorías -->
           <div class="productos-lista">
             <h3>Carta actual</h3>
             <div v-if="productos.length === 0" class="empty-productos">
-              No hay productos en el menú todavía.
+              No hay productos todavía.
             </div>
-
-            <!-- Un bloque por cada categoría -->
             <div
               v-for="(platos, categoria) in productosPorCategoria"
               :key="categoria"
               class="categoria-grupo"
             >
-              <!-- Cabecera de categoría — solo si tiene productos -->
               <div v-if="platos.length > 0" class="categoria-header">
                 <span class="categoria-icono">
                   {{ categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️' }}
@@ -391,7 +513,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
-
               <div v-for="p in platos" :key="p.id" class="producto-row">
                 <span class="producto-icon">{{ p.icon }}</span>
                 <div class="producto-info">
@@ -401,8 +522,131 @@ const eliminarProducto = async (id: string, nombre: string) => {
                 <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TAB: EMPLEADOS ── -->
+      <div v-if="currentTab === 'usuarios'">
+        <div class="page-header">
+          <div>
+            <h1>Gestión de Empleados</h1>
+            <p class="page-subtitle">{{ empleados.length }} empleados registrados</p>
+          </div>
+        </div>
+
+        <div class="empleados-layout">
+
+          <!-- Columna izquierda: formulario + códigos generados -->
+          <div class="empleados-left">
+
+            <div class="product-form-card">
+              <h3>🔑 Nueva invitación</h3>
+              <p class="form-hint">
+                Se generará un código único que el empleado usará en
+                <strong>/register</strong> para activar su cuenta.
+              </p>
+              <div class="product-form" style="margin-top: 18px;">
+                <div class="form-group">
+                  <label>Email del empleado</label>
+                  <input
+                    type="email"
+                    v-model="nuevaInvitacion.email"
+                    placeholder="empleado@restaurante.com"
+                  >
+                </div>
+                <div class="form-group">
+                  <label>Rol asignado</label>
+                  <select v-model="nuevaInvitacion.rol">
+                    <option value="camarero">🙋 Camarero</option>
+                    <option value="cocinero">👨‍🍳 Cocinero</option>
+                    <option value="admin">⚙️ Admin</option>
+                  </select>
+                </div>
+                <button
+                  @click="crearInvitacion"
+                  class="btn-primary btn-full"
+                  :disabled="isCreandoInvitacion"
+                >
+                  {{ isCreandoInvitacion ? 'Generando...' : '🔑 Generar Código' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Códigos generados -->
+            <div class="product-form-card" style="margin-top: 20px;">
+              <!-- NUEVO: Header flexible para meter el botón de limpiar al lado del título -->
+              <div class="section-header-flex">
+                <h3 style="margin-bottom: 0;">Códigos generados</h3>
+                <button 
+                  class="btn-icon-text" 
+                  @click="limpiarInvitacionesUsadas" 
+                  title="Borra todos los códigos que ya han sido usados"
+                >
+                  🧹 Limpiar usados
+                </button>
+              </div>
+
+              <div v-if="invitaciones.length === 0" class="empty-productos" style="padding: 20px 0">
+                No hay invitaciones todavía.
+              </div>
+              <div v-for="inv in invitaciones" :key="inv.id" class="invitacion-row">
+                <div class="producto-info min-width-0">
+                  <span class="producto-name truncate">{{ inv.email }}</span>
+                  <span class="producto-cat">{{ inv.rol }}</span>
+                </div>
+                <span class="codigo-badge" :class="inv.estado">
+                  {{ inv.estado === 'pendiente' ? inv.codigo : '✓ Usada' }}
+                </span>
+                <button
+                  v-if="inv.estado === 'pendiente'"
+                  class="btn-eliminar"
+                  @click="eliminarInvitacion(inv.id)"
+                >✕</button>
+              </div>
+            </div>
 
           </div>
+
+          <!-- Columna derecha: lista de empleados registrados -->
+          <div class="productos-lista">
+            <h3>👥 Equipo registrado</h3>
+            
+            <!-- NUEVO: Botones de filtro por roles -->
+            <div class="filtros-rol" v-if="empleados.length > 0">
+              <button :class="{ active: filtroRol === 'todos' }" @click="filtroRol = 'todos'">Todos</button>
+              <button :class="{ active: filtroRol === 'admin' }" @click="filtroRol = 'admin'">Admins</button>
+              <button :class="{ active: filtroRol === 'camarero' }" @click="filtroRol = 'camarero'">Camareros</button>
+              <button :class="{ active: filtroRol === 'cocinero' }" @click="filtroRol = 'cocinero'">Cocineros</button>
+            </div>
+
+            <div v-if="empleadosFiltrados.length === 0" class="empty-productos">
+              No hay empleados que coincidan con este filtro.
+            </div>
+
+            <!-- Usamos empleadosFiltrados en lugar de empleados -->
+            <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
+              <div class="empleado-avatar">
+                {{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}
+              </div>
+              <div class="producto-info min-width-0">
+                <span class="producto-name truncate">{{ emp.nombre }}</span>
+                <span class="producto-cat truncate">{{ emp.email }}</span>
+              </div>
+              <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
+              
+              <button 
+                class="activo-toggle" 
+                :class="emp.activo ? 'activo' : 'inactivo'"
+                @click="toggleEstadoEmpleado(emp.id, emp.activo)"
+              >
+                {{ emp.activo ? '● Activo' : '○ Inactivo' }}
+              </button>
+
+              <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -445,11 +689,7 @@ const eliminarProducto = async (id: string, nombre: string) => {
   margin-bottom: 8px;
 }
 
-.sidebar-brand h2 {
-  font-size: 1.15rem;
-  font-weight: 800;
-  color: white;
-}
+.sidebar-brand h2 { font-size: 1.15rem; font-weight: 800; color: white; }
 
 .admin-tag {
   background: #4f46e5;
@@ -482,6 +722,23 @@ const eliminarProducto = async (id: string, nombre: string) => {
 .sidebar-nav button:hover { background: #334155; color: white; }
 .sidebar-nav button.active { background: #4f46e5; color: white; font-weight: 600; }
 
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #334155;
+}
+
+.local-info {
+  font-size: 0.75rem;
+  color: #64748b;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .btn-logout {
   padding: 12px 16px;
   background: transparent;
@@ -492,7 +749,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
   font-size: 0.9rem;
   border-radius: 8px;
   transition: all 0.2s;
-  margin-top: auto;
 }
 
 .btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
@@ -515,7 +771,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
 
 .page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
 .page-subtitle { color: #64748b; font-size: 0.9rem; margin-top: 4px; }
-
 .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 .input-num {
@@ -576,14 +831,13 @@ const eliminarProducto = async (id: string, nombre: string) => {
   border: 1px solid #e2e8f0;
 }
 
-.mesa-card-header { 
-  display: flex; 
-  justify-content: space-between; 
-  align-items: center; 
+.mesa-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
 }
 
-/* NUEVO: Estilos para el input del nombre de la mesa */
 .mesa-nombre-input {
   font-weight: 700;
   color: #0f172a;
@@ -598,15 +852,8 @@ const eliminarProducto = async (id: string, nombre: string) => {
   outline: none;
 }
 
-.mesa-nombre-input:hover {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-}
-
-.mesa-nombre-input:focus {
-  border-color: #4f46e5;
-  background: white;
-}
+.mesa-nombre-input:hover { border-color: #e2e8f0; background: #f8fafc; }
+.mesa-nombre-input:focus { border-color: #4f46e5; background: white; }
 
 .mesa-header-actions {
   display: flex;
@@ -615,28 +862,16 @@ const eliminarProducto = async (id: string, nombre: string) => {
   flex-shrink: 0;
 }
 
-/* NUEVO: Estilos para el botón de borrar mesa individual */
 .btn-eliminar-mesa {
-  width: 24px; 
-  height: 24px;
-  background: #fee2e2; 
-  color: #dc2626;
-  border: none; 
-  border-radius: 50%;
-  cursor: pointer; 
-  font-weight: 700;
-  font-size: 0.75rem; 
-  transition: all 0.2s;
-  display: flex; 
-  align-items: center; 
-  justify-content: center;
-  flex-shrink: 0;
+  width: 24px; height: 24px;
+  background: #fee2e2; color: #dc2626;
+  border: none; border-radius: 50%;
+  cursor: pointer; font-weight: 700;
+  font-size: 0.75rem; transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center;
 }
 
-.btn-eliminar-mesa:hover { 
-  background: #dc2626; 
-  color: white; 
-}
+.btn-eliminar-mesa:hover { background: #dc2626; color: white; }
 
 .mesa-estado {
   font-size: 0.75rem;
@@ -655,7 +890,7 @@ const eliminarProducto = async (id: string, nombre: string) => {
   font-size: 0.9rem; text-align: center;
 }
 
-/* ── LAYOUT COMPARTIDO CATEGORÍAS / PRODUCTOS ── */
+/* ── LAYOUT COMPARTIDO ── */
 .productos-layout {
   display: grid;
   grid-template-columns: 340px 1fr;
@@ -681,10 +916,14 @@ const eliminarProducto = async (id: string, nombre: string) => {
   margin-bottom: 18px;
 }
 
+.form-hint {
+  font-size: 0.82rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+
 .product-form { display: flex; flex-direction: column; gap: 14px; }
-
 .form-group { display: flex; flex-direction: column; gap: 6px; }
-
 .form-group label { font-size: 0.82rem; font-weight: 600; color: #475569; }
 
 .form-group input,
@@ -702,7 +941,7 @@ const eliminarProducto = async (id: string, nombre: string) => {
 .form-group input:focus,
 .form-group select:focus {
   border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
 }
 
 /* ── CARTA ── */
@@ -716,7 +955,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
 
 .empty-productos { color: #94a3b8; text-align: center; padding: 40px 0; font-size: 0.95rem; }
 
-/* Cabecera de grupo de categoría */
 .categoria-grupo { margin-bottom: 8px; }
 
 .categoria-header {
@@ -729,14 +967,11 @@ const eliminarProducto = async (id: string, nombre: string) => {
   margin-top: 16px;
 }
 
-.categoria-header:first-of-type { margin-top: 0; }
-
 .categoria-icono { font-size: 1.2rem; }
 
 .categoria-nombre {
   font-weight: 700;
   color: #0f172a;
-  font-size: 0.95rem;
   flex: 1;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -763,7 +998,6 @@ const eliminarProducto = async (id: string, nombre: string) => {
 .producto-row:last-child { border-bottom: none; }
 
 .producto-icon { font-size: 1.5rem; }
-
 .producto-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .producto-name { font-weight: 600; color: #0f172a; font-size: 0.95rem; }
 .producto-cat { font-size: 0.78rem; color: #94a3b8; }
@@ -781,8 +1015,168 @@ const eliminarProducto = async (id: string, nombre: string) => {
 
 .btn-eliminar:hover { background: #dc2626; color: white; }
 
+/* ── EMPLEADOS ── */
+.empleados-layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.empleados-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.empleado-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.empleado-row:last-child { border-bottom: none; }
+
+.empleado-avatar {
+  width: 38px;
+  height: 38px;
+  background: #4f46e5;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.rol-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  text-transform: capitalize;
+  flex-shrink: 0;
+}
+
+.rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
+.rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
+.rol-badge.cocinero { background: #fef3c7; color: #b45309; }
+
+/* ── INVITACIONES ── */
+.invitacion-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.invitacion-row:last-child { border-bottom: none; }
+
+.codigo-badge {
+  font-family: 'Courier New', monospace;
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 5px 10px;
+  border-radius: 8px;
+  letter-spacing: 2px;
+  flex-shrink: 0;
+}
+
+.codigo-badge.pendiente {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px dashed #fcd34d;
+}
+
+.codigo-badge.usada {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+/* ── NUEVOS ESTILOS PARA UX EMPLEADOS ── */
+.min-width-0 { min-width: 0; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.activo-toggle {
+  border: none;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.2s;
+  flex-shrink: 0;
+}
+.activo-toggle.activo { background: #dcfce7; color: #16a34a; }
+.activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
+.activo-toggle:hover { filter: brightness(0.95); }
+
+/* Filtros de rol */
+.filtros-rol {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filtros-rol button {
+  background: #f1f5f9;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.filtros-rol button.active {
+  background: #4f46e5;
+  color: white;
+}
+
+.filtros-rol button:hover:not(.active) {
+  background: #e2e8f0;
+}
+
+/* Botón y header para limpiar códigos */
+.section-header-flex {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.btn-icon-text {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.2s;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.btn-icon-text:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+@media (max-width: 1100px) {
+  .empleados-layout { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 900px) {
   .productos-layout { grid-template-columns: 1fr; }
   .product-form-card { position: static; }
+  .content { padding: 20px; }
 }
 </style>

@@ -4,15 +4,13 @@ import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
-const { login } = useAuth()
+const { login, resetPassword } = useAuth()
 
 const email = ref('')
 const password = ref('')
 const rememberMe = ref(false)
 const isLoading = ref(false)
 const errorMsg = ref('')
-
-// NUEVA VARIABLE: Controla si la contraseña está oculta (false) o visible (true)
 const showPassword = ref(false)
 
 const handleLogin = async () => {
@@ -20,22 +18,34 @@ const handleLogin = async () => {
   errorMsg.value = ''
 
   try {
-    const role = await login(email.value, password.value)
+    // NUEVO: Le pasamos rememberMe.value como tercer parámetro
+    const role = await login(email.value, password.value, rememberMe.value)
 
     if (role === 'admin') router.replace('/admin')
     else if (role === 'cocinero') router.replace('/kitchen')
     else router.replace('/tables')
 
   } catch (error: any) {
-    const firebaseErrors: Record<string, string> = {
-      'auth/invalid-credential':     'Email o contraseña incorrectos.',
-      'auth/user-not-found':         'No existe ningún usuario con ese email.',
-      'auth/wrong-password':         'Contraseña incorrecta.',
-      'auth/too-many-requests':      'Demasiados intentos. Espera unos minutos.',
-      'auth/network-request-failed': 'Sin conexión. Comprueba tu red.'
-    }
-    errorMsg.value = firebaseErrors[error.code] ?? 'Error inesperado. Inténtalo de nuevo.'
+    errorMsg.value = error.message || 'Error al iniciar sesión. Inténtalo de nuevo.'
+  } finally {
+    isLoading.value = false
+  }
+}
 
+const handleResetPassword = async () => {
+  errorMsg.value = ''
+  
+  if (!email.value) {
+    errorMsg.value = 'Por favor, escribe tu correo en el campo "Email" primero.'
+    return
+  }
+
+  isLoading.value = true
+  try {
+    await resetPassword(email.value)
+    alert(`Te hemos enviado un enlace de recuperación a:\n${email.value}\n\nRevisa tu bandeja de entrada (y la carpeta de Spam).`)
+  } catch (error: any) {
+    errorMsg.value = error.message
   } finally {
     isLoading.value = false
   }
@@ -96,12 +106,9 @@ const handleLogin = async () => {
 
           <div class="input-group">
             <label>Contraseña</label>
-            <!-- NUEVO: Añadimos password-wrapper -->
             <div class="input-wrapper password-wrapper">
-              <!-- NUEVO: Cambia dinámicamente entre text y password -->
               <input :type="showPassword ? 'text' : 'password'" v-model="password" placeholder="••••••••" required>
               
-              <!-- NUEVO: Botón para alternar -->
               <button type="button" class="btn-toggle-password" @click="showPassword = !showPassword">
                 {{ showPassword ? 'Ocultar' : 'Mostrar' }}
               </button>
@@ -114,16 +121,23 @@ const handleLogin = async () => {
               <span class="checkmark"></span>
               Recordarme
             </label>
-            <a href="#" class="forgot-link">¿Olvidaste tu contraseña?</a>
+            <a href="#" class="forgot-link" @click.prevent="handleResetPassword">¿Olvidaste tu contraseña?</a>
           </div>
 
           <div v-if="errorMsg" class="error-msg">
             {{ errorMsg }}
           </div>
+          
           <button type="submit" class="btn-primary" :disabled="isLoading">
             <span v-if="!isLoading">Iniciar sesion</span>
             <div v-else class="spinner"></div>
           </button>
+
+          <div class="register-link">
+            ¿Tienes un código de invitación?
+            <router-link to="/register" class="forgot-link">Regístrate aquí</router-link>
+          </div>
+
         </form>
       
       </div>
@@ -433,7 +447,6 @@ h2 {
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1), inset 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
-/* NUEVO: Estilos para el contenedor y botón de la contraseña */
 .password-wrapper {
   position: relative;
   display: flex;
@@ -460,7 +473,6 @@ h2 {
 .btn-toggle-password:hover {
   color: #4f46e5;
 }
-/* FIN NUEVO */
 
 .form-extras {
   display: flex;
@@ -616,6 +628,13 @@ h2 {
     box-shadow: none;
     border-radius: 30px 30px 0 0;
     margin-top: -30px;
+  }
+
+  .register-link {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 0.85rem;
+    color: #64748b;
   }
 }
 </style>

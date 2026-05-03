@@ -1,6 +1,15 @@
 // src/router/index.ts
 import { createRouter, createWebHistory } from 'vue-router'
+import { watch } from 'vue' // NUEVO: Importamos watch para vigilar a Firebase
 import { useAuth } from '../composables/useAuth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresAuth?: boolean
+    requiresGuest?: boolean
+    roles?: string[]
+  }
+}
 
 const vistas = import.meta.glob('../views/*.vue')
 
@@ -11,7 +20,12 @@ const router = createRouter({
       path: '/',
       name: 'Login',
       component: vistas['../views/LoginView.vue'],
-      // Si ya estás autenticado, el login te redirige a tu panel
+      meta: { requiresGuest: true }
+    },
+    {
+      path: '/register',
+      name: 'Register',
+      component: vistas['../views/RegisterView.vue'],
       meta: { requiresGuest: true }
     },
     {
@@ -47,35 +61,56 @@ const router = createRouter({
   ]
 })
 
-// Navigation Guard global: se ejecuta antes de CADA cambio de ruta
-router.beforeEach((to) => {
-  const { currentUser, userRole } = useAuth()
+// Extraemos las variables de nuestro composable
+const { currentUser, userRole, authReady } = useAuth()
 
-  // Ruta protegida y no hay sesión → al login
+/**
+ * NUEVO: Esta promesa pausa la ejecución del router hasta que 
+ * Firebase confirme si el usuario tiene una sesión activa guardada o no.
+ */
+const waitForAuthReady = () => {
+  return new Promise<void>((resolve) => {
+    // Si ya está listo (porque navegamos sin recargar), pasamos al instante
+    if (authReady.value) {
+      resolve()
+    } else {
+      // Si no, nos quedamos vigilando hasta que Firebase termine
+      const unwatch = watch(authReady, (isReady) => {
+        if (isReady) {
+          unwatch() // Dejamos de vigilar para no consumir memoria
+          resolve() // Damos luz verde al router
+        }
+      })
+    }
+  })
+}
+
+// Convertimos el beforeEach en asíncrono (async)
+router.beforeEach(async (to) => {
+  // 🛑 El router se detiene aquí hasta que Firebase cargue
+  await waitForAuthReady()
+
+  // A partir de aquí, el router ya actúa con la información real de la sesión
   if (to.meta.requiresAuth && !currentUser.value) {
     return { name: 'Login' }
   }
 
-  // Ruta de invitado (login) pero ya hay sesión → redirigir según rol
   if (to.meta.requiresGuest && currentUser.value) {
     return redirectByRole(userRole.value)
   }
 
-  // Ruta con roles definidos: verificamos que el usuario tenga permiso
   if (to.meta.roles && userRole.value) {
     const rolesPermitidos = to.meta.roles as string[]
     if (!rolesPermitidos.includes(userRole.value)) {
-      // Redirigimos a su panel correcto si intenta acceder a uno ajeno
       return redirectByRole(userRole.value)
     }
   }
 })
 
-// Función auxiliar: devuelve la ruta correcta según el rol
 function redirectByRole(role: string | null) {
   if (role === 'admin') return { name: 'Admin' }
   if (role === 'cocinero') return { name: 'Kitchen' }
-  return { name: 'Tables' } // camarero por defecto
+  return { name: 'Tables' }
 }
 
 export default router

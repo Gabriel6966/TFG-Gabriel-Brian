@@ -5,9 +5,6 @@ import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 
 // --- Interfaces TypeScript ---
-// Definimos la forma exacta de los datos que vienen de Firestore.
-// Esto le dice a TypeScript qué campos existen y de qué tipo son,
-// evitando errores en tiempo de desarrollo.
 interface Plato {
   nombre: string
   cantidad: number
@@ -22,13 +19,12 @@ interface Comanda {
   lineas: Plato[]
 }
 
-const { logout, currentUser } = useAuth()
+// Extraemos localId para filtrar la cocina por restaurante
+const { logout, currentUser, localId } = useAuth()
 
 const comandas = ref<Comanda[]>([])
 const horaActual = ref(new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }))
 
-// Separamos las comandas en dos columnas por estado.
-// computed() recalcula automáticamente cuando cambia comandas.value
 const pendientes = computed(() =>
   comandas.value.filter(c => c.estado === 'pendiente')
 )
@@ -40,51 +36,51 @@ let unsubscribe: (() => void) | null = null
 let clockInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
-  // Reloj en tiempo real en la top bar
   clockInterval = setInterval(() => {
     horaActual.value = new Date().toLocaleTimeString('es-ES', {
       hour: '2-digit', minute: '2-digit'
     })
   }, 1000)
 
-  // Escuchamos SOLO las comandas activas (pendiente o en_preparacion).
-  // Usamos 'in' de Firestore para filtrar por dos valores a la vez.
-  // Las comandas en estado 'listo' nunca llegan al cliente → mejor rendimiento.
-  const q = query(
-    collection(db, 'comandas'),
-    where('estado', 'in', ['pendiente', 'en_preparacion'])
-  )
+  // Solo activamos el listener si el usuario tiene un localId asignado
+  if (localId.value) {
+    // Escuchamos las comandas DENTRO del archivador del local
+    const q = query(
+      collection(db, `locales/${localId.value}/comandas`),
+      where('estado', 'in', ['pendiente', 'en_preparacion'])
+    )
 
-  unsubscribe = onSnapshot(q, (snapshot) => {
-    comandas.value = snapshot.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    })) as Comanda[]
-  })
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      comandas.value = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as Comanda[]
+    })
+  }
 })
 
-// Limpieza al salir: cancelamos el listener y el intervalo del reloj
 onUnmounted(() => {
   unsubscribe?.()
   if (clockInterval) clearInterval(clockInterval)
 })
 
-// Calcula cuántos minutos lleva la comanda esperando
-// para mostrar una alerta visual si lleva demasiado tiempo
 const minutosEspera = (fecha: Timestamp): number => {
   if (!fecha?.toDate) return 0
   return Math.floor((Date.now() - fecha.toDate().getTime()) / 60000)
 }
 
-// Avanza el estado de una comanda en Firestore.
-// onSnapshot detectará el cambio y actualizará la UI automáticamente.
 const avanzarEstado = async (comanda: Comanda) => {
+  if (!localId.value) return
+  
   const nuevoEstado = comanda.estado === 'pendiente' ? 'en_preparacion' : 'listo'
   try {
-    await updateDoc(doc(db, 'comandas', comanda.id), { estado: nuevoEstado })
+    // Actualizamos el documento en la ruta dinámica del local
+    await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), { 
+      estado: nuevoEstado 
+    })
   } catch (error) {
-    console.error('Error al actualizar estado de comanda:', error)
-    alert('No se pudo actualizar el estado. Comprueba tu conexión.')
+    console.error('Error al actualizar estado:', error)
+    alert('No se pudo actualizar el estado.')
   }
 }
 </script>
@@ -95,9 +91,10 @@ const avanzarEstado = async (comanda: Comanda) => {
     <!-- TOP BAR -->
     <header class="top-bar">
       <div class="top-bar-left">
-        
         <h1 class="dashboard-title">Dashboard de Cocina</h1>
         <span class="brand-tag">EasyOrder</span>
+        <!-- Badge del local para verificar el multitenant -->
+        <span v-if="localId" class="local-badge-top">{{ localId }}</span>
       </div>
 
       <div class="top-bar-center">
@@ -118,13 +115,11 @@ const avanzarEstado = async (comanda: Comanda) => {
         <span class="clock">{{ horaActual }}</span>
         <div class="user-info">
           <span class="user-name">{{ currentUser?.email?.split('@')[0] }}</span>
-
         </div>
         <button class="btn-logout" @click="logout">Cerrar sesión</button>
       </div>
     </header>
 
-    <!-- CUERPO PRINCIPAL: dos columnas -->
     <main class="kitchen-board">
 
       <!-- COLUMNA IZQUIERDA: Pendientes -->
@@ -136,13 +131,11 @@ const avanzarEstado = async (comanda: Comanda) => {
         </div>
 
         <div class="tickets-list">
-          <!-- Estado vacío -->
           <div v-if="pendientes.length === 0" class="empty-state">
             <span class="empty-icon">✓</span>
             <p>Sin pedidos pendientes</p>
           </div>
 
-          <!-- Ticket de comanda -->
           <article
             v-for="comanda in pendientes"
             :key="comanda.id"
@@ -230,6 +223,17 @@ const avanzarEstado = async (comanda: Comanda) => {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   margin: 0;
   padding: 0;
+}
+
+.local-badge-top {
+  background: #334155;
+  color: #94a3b8;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  border: 1px solid #475569;
 }
 
 .cocina-layout {

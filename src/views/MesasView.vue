@@ -9,12 +9,12 @@ import { CartStore } from '../stores/cart'
 import { useAuth } from '../composables/useAuth'
 
 const cartStore = CartStore()
-const { currentUser, logout } = useAuth()
+const { currentUser, logout, localId } = useAuth()
 
 // Estado reactivo
 const tables = ref<any[]>([])
 const productos = ref<any[]>([])
-const categorias = ref<string[]>([]) // ← NUEVO: categorías desde Firestore
+const categorias = ref<string[]>([])
 const mesaSeleccionada = ref<number | null>(null)
 const mesaSeleccionadaId = ref<string | null>(null)
 const categoriaSeleccionada = ref('')
@@ -24,32 +24,33 @@ let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 
 onMounted(() => {
-  // Listener 1: Mesas en tiempo real
-  const qMesas = query(collection(db, 'mesas'), orderBy('numero'))
-  unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
-    tables.value = snapshot.docs.map(d => ({
-      id: d.id,
-      nr: d.data().numero,
-      capacity: d.data().capacidad ?? 4,
-      status: d.data().estado === 'libre' ? 'available' : 'occupied'
-    }))
-  })
+  // Solo activamos los escuchas si tenemos la "llave" del local
+  if (localId.value) {
+    
+    // 1. Listener Mesas (Ruta SaaS)
+    const qMesas = query(collection(db, `locales/${localId.value}/mesas`), orderBy('numero'))
+    unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
+      tables.value = snapshot.docs.map(d => ({
+        id: d.id,
+        nr: d.data().numero,
+        capacity: d.data().capacidad ?? 4,
+        status: d.data().estado === 'libre' ? 'available' : 'occupied'
+      }))
+    })
 
-  // Listener 2: Productos en tiempo real
-  unsubscribeProductos = onSnapshot(collection(db, 'productos'), (snapshot) => {
-    productos.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+    // 2. Listener Productos (Ruta SaaS)
+    unsubscribeProductos = onSnapshot(collection(db, `locales/${localId.value}/productos`), (snapshot) => {
+      productos.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
 
-    // PUNTO 3 — Categorías dinámicas: las extraemos de los productos
-    // que existan en Firestore. Set elimina duplicados automáticamente.
-    // Si el admin añade un producto con categoría "Entrantes", aparece aquí sola.
-    const cats = [...new Set(productos.value.map((p: any) => p.category).filter(Boolean))] as string[]
-    categorias.value = cats
+      // Categorías dinámicas extraídas de los productos del local
+      const cats = [...new Set(productos.value.map((p: any) => p.category).filter(Boolean))] as string[]
+      categorias.value = cats
 
-    // Seleccionamos la primera categoría disponible si aún no hay ninguna activa
-    if (!categoriaSeleccionada.value && cats.length > 0) {
-      categoriaSeleccionada.value = cats[0]
-    }
-  })
+      if (!categoriaSeleccionada.value && cats.length > 0) {
+        categoriaSeleccionada.value = cats[0]
+      }
+    })
+  }
 })
 
 onUnmounted(() => {
@@ -57,47 +58,46 @@ onUnmounted(() => {
   unsubscribeProductos?.()
 })
 
-// Productos filtrados por categoría activa
 const productosFiltrados = computed(() =>
   productos.value.filter((p: any) => p.category === categoriaSeleccionada.value)
 )
 
-// Selecciona una mesa y la registra en el store
 const openTable = (table: any) => {
   mesaSeleccionada.value = table.nr
   mesaSeleccionadaId.value = table.id
   cartStore.setTable(table.nr)
 }
 
-// PUNTO 2 — Liberar mesa: actualiza estado a 'libre' en Firestore
-// y limpia el estado local. La UI se actualiza sola por onSnapshot.
+// Liberar mesa (Ruta SaaS)
 const liberarMesa = async () => {
-  if (!mesaSeleccionadaId.value) return
+  if (!mesaSeleccionadaId.value || !localId.value) return
   if (!confirm(`¿Confirmas que la Mesa ${mesaSeleccionada.value} ha terminado su servicio?`)) return
 
   try {
-    await updateDoc(doc(db, 'mesas', mesaSeleccionadaId.value), {
+    // Actualizamos el documento DENTRO de la subcolección del local
+    await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
       estado: 'libre'
     })
-    // Limpiamos selección y carrito local
+    
     cartStore.clear()
     mesaSeleccionada.value = null
     mesaSeleccionadaId.value = null
   } catch (error) {
     console.error('Error al liberar la mesa:', error)
-    alert('No se pudo liberar la mesa. Comprueba tu conexión.')
+    alert('No se pudo liberar la mesa.')
   }
 }
 
-// Envía la comanda a Firestore y marca la mesa como ocupada
+// Enviar pedido (Ruta SaaS)
 const enviarPedido = async () => {
   if (cartStore.items.length === 0) return alert('El pedido está vacío')
-  if (!mesaSeleccionadaId.value || !currentUser.value) return
+  if (!mesaSeleccionadaId.value || !currentUser.value || !localId.value) return
 
   isEnviando.value = true
 
   try {
-    await addDoc(collection(db, 'comandas'), {
+    // 1. Guardamos la comanda en la subcolección del local
+    await addDoc(collection(db, `locales/${localId.value}/comandas`), {
       mesaId: mesaSeleccionadaId.value,
       mesaNumero: mesaSeleccionada.value,
       usuarioId: currentUser.value.uid,
@@ -113,7 +113,8 @@ const enviarPedido = async () => {
       }))
     })
 
-    await updateDoc(doc(db, 'mesas', mesaSeleccionadaId.value), {
+    // 2. Marcamos la mesa como ocupada en el archivador del local
+    await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
       estado: 'ocupada'
     })
 
@@ -123,21 +124,24 @@ const enviarPedido = async () => {
 
   } catch (error) {
     console.error('Error al enviar la comanda:', error)
-    alert('Error al enviar el pedido. Inténtalo de nuevo.')
+    alert('Error al enviar el pedido.')
   } finally {
     isEnviando.value = false
   }
 }
 </script>
+
 <template>
   <div class="pos-container">
     <aside class="panel-mesas">
       <div class="panel-header">
-  <h1 class="brand-title">EasyOrder</h1>
-        <span class="user-name">{{ currentUser?.email?.split('@')[0] }}</span>
-  <!-- NUEVO: botón de cierre de sesión -->
-  <button class="btn-logout-camarero" @click="logout">Cerrar sesión</button>
-</div>
+        <h1 class="brand-title">EasyOrder</h1>
+        <div class="user-info">
+          <span class="user-name">{{ currentUser?.email?.split('@')[0] }}</span>
+          <span class="local-tag">{{ localId }}</span>
+        </div>
+        <button class="btn-logout-camarero" @click="logout">Cerrar sesión</button>
+      </div>
 
       <div class="tables-grid">
         <button v-for="table in tables" :key="table.id" class="table-card"
@@ -197,26 +201,24 @@ const enviarPedido = async () => {
       </div>
 
       <div class="order-footer">
-  <div class="total-row">
-    <span>Total</span>
-    <span class="total-price">{{ cartStore.totalPrice.toFixed(2) }}€</span>
-  </div>
+        <div class="total-row">
+          <span>Total</span>
+          <span class="total-price">{{ cartStore.totalPrice.toFixed(2) }}€</span>
+        </div>
 
+        <button
+          class="btn-liberar"
+          @click="liberarMesa"
+          :disabled="!mesaSeleccionada"
+        >
+          ✓ Finalizar Servicio
+        </button>
 
-  <button
-    class="btn-liberar"
-    @click="liberarMesa"
-    :disabled="!mesaSeleccionada"
-  >
-    ✓ Finalizar Servicio
-  </button>
-
-  <button class="btn-send" @click="enviarPedido" :disabled="!mesaSeleccionada || isEnviando">
-    <span v-if="!isEnviando">🚀 Enviar a Cocina</span>
-    <span v-else>Enviando...</span>
-  </button>
-</div>
-
+        <button class="btn-send" @click="enviarPedido" :disabled="!mesaSeleccionada || isEnviando">
+          <span v-if="!isEnviando">🚀 Enviar a Cocina</span>
+          <span v-else>Enviando...</span>
+        </button>
+      </div>
     </section>
   </div>
 </template>
@@ -225,6 +227,24 @@ const enviarPedido = async () => {
 * {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   box-sizing: border-box;
+}
+
+/* Estilos adicionales para la cabecera multitenant */
+.user-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.local-tag {
+  background: #fef08a;
+  color: #854d0e;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .btn-logout-camarero {

@@ -4,76 +4,108 @@ import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  sendPasswordResetEmail,
+  setPersistence, // NUEVO
+  browserLocalPersistence, // NUEVO
+  browserSessionPersistence, // NUEVO
   type User
 } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase'
 import router from '../router'
 
-// Estado global reactivo compartido entre componentes
 const currentUser = ref<User | null>(null)
 const userRole = ref<'admin' | 'camarero' | 'cocinero' | null>(null)
-const authReady = ref(false) // true cuando Firebase ha terminado de verificar la sesión
+const localId = ref<string | null>(null)
+const authReady = ref(false)
 
-/**
- * Composable central de autenticación.
- * Encapsula toda la lógica de Firebase Auth para que las vistas
- * no tengan que saber cómo funciona Firebase por dentro.
- */
 export function useAuth() {
 
-  /**
-   * Inicia sesión y consulta el rol del usuario en Firestore.
-   * Lanza un error si las credenciales son incorrectas,
-   * que la vista captura para mostrar feedback al usuario.
-   */
-  const login = async (email: string, password: string) => {
-    const credential = await signInWithEmailAndPassword(auth, email, password)
+  // NUEVO: Añadimos el parámetro rememberMe (por defecto false)
+  const login = async (email: string, password: string, rememberMe: boolean = false) => {
+    try {
+      // 🛑 NUEVO: Configuramos la persistencia ANTES de iniciar sesión
+      const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence
+      await setPersistence(auth, persistenceType)
 
-    // Buscamos el documento del usuario en la colección 'usuarios'
-    // para saber qué rol tiene asignado
-    const userDoc = await getDoc(doc(db, 'usuarios', credential.user.uid))
-    if (userDoc.exists()) {
-      userRole.value = userDoc.data().rol
-    }
+      const credential = await signInWithEmailAndPassword(auth, email, password)
+      const userDoc = await getDoc(doc(db, 'usuarios', credential.user.uid))
+      
+      if (userDoc.exists()) {
+        const userData = userDoc.data()
 
-    return userRole.value
-  }
-
-  /**
-   * Cierra la sesión y limpia el estado local
-   */
-  const logout = async () => {
-  await signOut(auth)
-  currentUser.value = null
-  userRole.value = null
-  // Usamos replace para que tampoco se pueda volver atrás tras cerrar sesión
-  router.replace('/')
-}
-
-  /**
-   * Listener persistente: Firebase notifica automáticamente
-   * si hay una sesión activa al recargar la página.
-   * Lo llamamos UNA sola vez desde main.ts
-   */
-  const initAuthListener = () => {
-    onAuthStateChanged(auth, async (user) => {
-      currentUser.value = user
-
-      if (user) {
-        // Si hay sesión activa, recargamos el rol desde Firestore
-        const userDoc = await getDoc(doc(db, 'usuarios', user.uid))
-        if (userDoc.exists()) {
-          userRole.value = userDoc.data().rol
+        if (userData.activo === false) {
+          await signOut(auth) 
+          throw new Error('🚫 Esta cuenta ha sido desactivada por el administrador.')
         }
+
+        userRole.value = userData.rol
+        localId.value = userData.localId
+        return userRole.value
       } else {
-        userRole.value = null
+        await signOut(auth)
+        throw new Error('Usuario no encontrado en la base de datos.')
       }
 
-      // Marcamos que Firebase ya resolvió el estado inicial
+    } catch (error: any) {
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+        throw new Error('Correo o contraseña incorrectos.')
+      } else if (error.code === 'auth/too-many-requests') {
+        throw new Error('Demasiados intentos fallidos. Inténtalo más tarde.')
+      } else if (error.code === 'auth/invalid-email') {
+        throw new Error('El formato del correo electrónico no es válido.')
+      }
+      throw error 
+    }
+  }
+
+  const logout = async () => {
+    await signOut(auth)
+    currentUser.value = null
+    userRole.value = null
+    localId.value = null
+    router.replace('/')
+  }
+
+  const resetPassword = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email)
+    } catch (error: any) {
+      if (error.code === 'auth/user-not-found') {
+        throw new Error('No hay ninguna cuenta registrada con este correo.')
+      } else if (error.code === 'auth/invalid-email') {
+        throw new Error('El formato del correo no es válido.')
+      } else if (error.code === 'auth/missing-email') {
+        throw new Error('Por favor, escribe tu correo electrónico.')
+      }
+      throw new Error('No se pudo enviar el correo de recuperación.')
+    }
+  }
+
+  const initAuthListener = () => {
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        const userDoc = await getDoc(doc(db, 'usuarios', user.uid))
+        if (userDoc.exists()) {
+          const userData = userDoc.data()
+          if (userData.activo === false) {
+            await signOut(auth)
+            return 
+          }
+          currentUser.value = user
+          userRole.value = userData.rol
+          localId.value = userData.localId 
+        } else {
+          await signOut(auth)
+        }
+      } else {
+        currentUser.value = null
+        userRole.value = null
+        localId.value = null
+      }
       authReady.value = true
     })
   }
 
-  return { currentUser, userRole, authReady, login, logout, initAuthListener }
+  return { currentUser, userRole, localId, authReady, login, logout, resetPassword, initAuthListener } 
 }
