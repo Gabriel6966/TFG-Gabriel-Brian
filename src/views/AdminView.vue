@@ -16,6 +16,7 @@ interface Mesa {
   nombre?: string
   estado: 'libre' | 'ocupada'
   capacidad: number
+  zona?: string
 }
 
 interface Producto {
@@ -27,6 +28,12 @@ interface Producto {
 }
 
 interface Categoria {
+  id: string
+  nombre: string
+  icono: string
+}
+
+interface Zona {
   id: string
   nombre: string
   icono: string
@@ -58,6 +65,7 @@ const currentTab = ref('mesas')
 const mesas = ref<Mesa[]>([])
 const productos = ref<Producto[]>([])
 const categorias = ref<Categoria[]>([])
+const zonas = ref<Zona[]>([])
 const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
 const cantidadMesas = ref(10)
@@ -70,10 +78,12 @@ const filtroRol = ref('todos')
 // NUEVO: EMOJI PICKER - Estados para abrir/cerrar los teclados
 const mostrarSelectorCategoria = ref(false)
 const mostrarSelectorProducto = ref(false)
+const mostrarSelectorZona = ref(false)
 
 // Formularios
 const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️' })
+const nuevaZona = ref({ nombre: '', icono: '🛋️' })
 const nuevaInvitacion = ref({
   email: '',
   rol: 'camarero' as 'admin' | 'camarero' | 'cocinero'
@@ -82,11 +92,13 @@ const nuevaInvitacion = ref({
 // NUEVO: Estado del mapa de mesas
 const posicionesMesas = ref<Record<string, {x: number, y: number}>>({})
 const mesaSeleccionada = ref<number | null>(null)
+const zonaActiva = ref('')
 
 // Limpiadores de listeners
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 let unsubscribeCategorias: (() => void) | null = null
+let unsubscribeZonas: (() => void) | null = null
 let unsubscribeInvitaciones: (() => void) | null = null
 let unsubscribeEmpleados: (() => void) | null = null
 
@@ -125,6 +137,18 @@ onMounted(() => {
     }
   })
 
+  // Listener zonas
+  const qZonas = query(
+    collection(db, `locales/${localId.value}/zonas`),
+    orderBy('nombre')
+  )
+  unsubscribeZonas = onSnapshot(qZonas, (snapshot) => {
+    zonas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Zona[]
+    if (!zonaActiva.value && zonas.value.length > 0) {
+      zonaActiva.value = zonas.value[0].nombre
+    }
+  })
+
   // Listener invitaciones
   const qInv = query(
     collection(db, 'invitaciones'),
@@ -150,6 +174,7 @@ onUnmounted(() => {
   unsubscribeMesas?.()
   unsubscribeProductos?.()
   unsubscribeCategorias?.()
+  unsubscribeZonas?.()
   unsubscribeInvitaciones?.()
   unsubscribeEmpleados?.()
 })
@@ -185,6 +210,12 @@ const onSelectEmojiProducto = (emoji: any) => {
   mostrarSelectorProducto.value = false
 }
 
+const onSelectEmojiZona = (emoji: any) => {
+  nuevaZona.value.icono = emoji.i
+  mostrarSelectorZona.value = false
+}
+
+// NUEVO: Lógica del mapa interactivo para el Admin
 const handleUpdatePosition = (id: string, x: number, y: number) => {
   posicionesMesas.value[id] = { x, y }
   localStorage.setItem(`posicionesMesas_${localId.value}`, JSON.stringify(posicionesMesas.value))
@@ -194,8 +225,12 @@ const handleSelectTable = (table: any) => {
   mesaSeleccionada.value = table.nr
 }
 
+const mesasFiltradasPorZona = computed(() => {
+  return mesas.value.filter(m => m.zona === zonaActiva.value || (!m.zona && zonas.value.length === 0))
+})
+
 const mesasParaMapa = computed(() => {
-  return mesas.value.map(m => ({
+  return mesasFiltradasPorZona.value.map(m => ({
     id: m.id,
     nr: m.numero,
     status: m.estado === 'libre' ? 'available' : m.estado === 'ocupada' ? 'occupied' : 'preparing',
@@ -209,15 +244,19 @@ const mesasParaMapa = computed(() => {
 
 const generarMesas = async () => {
   if (!localId.value) return
+  if (zonas.value.length === 0) return alert('⚠️ Por favor, crea al menos una "Zona" antes de añadir mesas.')
+  if (!zonaActiva.value) zonaActiva.value = zonas.value[0].nombre
   isLoading.value = true
   try {
     const ultimaNumero = mesas.value.length > 0
-      ? mesas.value[mesas.value.length - 1].numero : 0
+      ? Math.max(...mesas.value.map(m => m.numero)) : 0
+      
     for (let i = 1; i <= cantidadMesas.value; i++) {
       await addDoc(collection(db, `locales/${localId.value}/mesas`), {
         numero: ultimaNumero + i,
         estado: 'libre',
-        capacidad: 4
+        capacidad: 4,
+        zona: zonaActiva.value
       })
     }
   } catch { alert('Error al generar mesas.') }
@@ -277,6 +316,32 @@ const eliminarCategoria = async (id: string, nombre: string) => {
   try {
     await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id))
   } catch { alert('Error al eliminar la categoría.') }
+}
+
+// ── ZONAS ──────────────────────────────────────────────────────────────────
+
+const guardarZona = async () => {
+  if (!localId.value) return
+  if (!nuevaZona.value.nombre.trim()) return alert('El nombre de la zona es obligatorio.')
+  const yaExiste = zonas.value.some(z => z.nombre.toLowerCase() === nuevaZona.value.nombre.toLowerCase())
+  if (yaExiste) return alert('Esa zona ya existe.')
+  try {
+    await addDoc(collection(db, `locales/${localId.value}/zonas`), { ...nuevaZona.value })
+    nuevaZona.value = { nombre: '', icono: '🛋️' }
+  } catch { alert('Error al crear la zona.') }
+}
+
+const eliminarZona = async (id: string, nombre: string) => {
+  if (!localId.value) return
+  const afectadas = mesas.value.filter(m => m.zona === nombre).length
+  const msg = afectadas > 0
+    ? `¿Eliminar la zona "${nombre}"? Hay ${afectadas} mesas en esta zona que se ocultarán.`
+    : `¿Eliminar la zona "${nombre}"?`
+  if (!confirm(msg)) return
+  try {
+    await deleteDoc(doc(db, `locales/${localId.value}/zonas`, id))
+    if (zonaActiva.value === nombre) zonaActiva.value = zonas.value.find(z => z.id !== id)?.nombre || ''
+  } catch { alert('Error al eliminar la zona.') }
 }
 
 // ── PRODUCTOS ──────────────────────────────────────────────────────────────
@@ -388,6 +453,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
         <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">
           🪑 Mesas
         </button>
+        <button :class="{ active: currentTab === 'zonas' }" @click="currentTab = 'zonas'">
+          🔲 Zonas
+        </button>
         <button :class="{ active: currentTab === 'categorias' }" @click="currentTab = 'categorias'">
           🗂️ Categorías
         </button>
@@ -424,11 +492,18 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
           </div>
         </div>
 
+        <div class="tabs-zone-admin" v-if="zonas.length > 0">
+          <button v-for="z in zonas" :key="z.id" :class="{ active: zonaActiva === z.nombre }" @click="zonaActiva = z.nombre">
+            {{ z.icono }} {{ z.nombre }}
+          </button>
+        </div>
+        <div v-else class="empty-productos" style="padding: 10px 0;">⚠️ Primero debes crear una Zona en la pestaña "Zonas" para ver el mapa.</div>
+
         <div class="mesas-admin-layout">
           <!-- MAPA INTERACTIVO -->
-          <div class="mapa-admin-container">
+          <div class="mapa-admin-container" v-if="zonas.length > 0">
             <PosFloorMap
-              zona="interior"
+              :zona="zonaActiva.toLowerCase()"
               :tables="mesasParaMapa"
               :mesa-seleccionada="mesaSeleccionada"
               :is-editable="true"
@@ -439,7 +514,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 
           <!-- LISTA DE MESAS (SIDEBAR DERECHO) -->
           <div class="mesas-lista-admin">
-            <div v-for="mesa in mesas" :key="mesa.id" class="mesa-card" :class="{ 'selected-card': mesaSeleccionada === mesa.numero }" @click="mesaSeleccionada = mesa.numero">
+            <div v-for="mesa in mesasFiltradasPorZona" :key="mesa.id" class="mesa-card" :class="{ 'selected-card': mesaSeleccionada === mesa.numero }" @click="mesaSeleccionada = mesa.numero">
               <div class="mesa-card-header">
                 <input type="text" class="mesa-nombre-input" :value="mesa.nombre || `Mesa ${mesa.numero}`"
                   @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)">
@@ -453,6 +528,53 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                 <input type="number" :value="mesa.capacidad" min="1" max="20"
                   @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)">
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ── TAB: ZONAS ── -->
+      <div v-if="currentTab === 'zonas'">
+        <div class="page-header">
+          <div>
+            <h1>Gestión de Zonas</h1>
+            <p class="page-subtitle">{{ zonas.length }} zonas creadas (Salones, Terrazas, Barras...)</p>
+          </div>
+        </div>
+
+        <div class="productos-layout">
+          <div class="product-form-card">
+            <h3>Nueva Zona</h3>
+            <div class="product-form">
+              <div class="form-group">
+                <label>Nombre de la zona</label>
+                <input v-model="nuevaZona.nombre" placeholder="Ej: Terraza Principal">
+              </div>
+              <div class="form-group">
+                <label>Icono (Emoji)</label>
+                <div class="emoji-selector-container">
+                  <button type="button" class="btn-emoji" @click="mostrarSelectorZona = !mostrarSelectorZona">
+                    <span class="emoji-preview">{{ nuevaZona.icono }}</span> Cambiar Icono
+                  </button>
+                  <div v-if="mostrarSelectorZona" class="picker-popup">
+                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiZona" />
+                  </div>
+                </div>
+              </div>
+              <button @click="guardarZona" class="btn-primary btn-full">+ Crear Zona</button>
+            </div>
+          </div>
+
+          <div class="productos-lista">
+            <h3>Zonas actuales</h3>
+            <div v-if="zonas.length === 0" class="empty-productos">No hay zonas creadas todavía.</div>
+            <div v-for="z in zonas" :key="z.id" class="producto-row">
+              <span class="producto-icon">{{ z.icono }}</span>
+              <div class="producto-info">
+                <span class="producto-name">{{ z.nombre }}</span>
+                <span class="producto-cat">{{ mesas.filter(m => m.zona === z.nombre).length }} mesas en esta zona</span>
+              </div>
+              <button class="btn-eliminar" @click="eliminarZona(z.id, z.nombre)">✕</button>
             </div>
           </div>
         </div>
@@ -906,6 +1028,32 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 /* ── MESAS ── */
+.tabs-zone-admin {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.tabs-zone-admin button {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  font-weight: 600;
+  cursor: pointer;
+  color: #475569;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.tabs-zone-admin button.active {
+  background: #4f46e5;
+  color: white;
+  border-color: #4f46e5;
+}
+
 .mesas-admin-layout {
   display: grid;
   grid-template-columns: 1fr 340px;

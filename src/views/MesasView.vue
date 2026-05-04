@@ -15,23 +15,31 @@ import PosOrderPanel from '../components/pos/PosOrderPanel.vue'
 const cartStore = CartStore()
 const { currentUser, logout, localId } = useAuth()
 
+interface Zona {
+  id: string
+  nombre: string
+  icono: string
+}
+
 // Estado reactivo original
 const tables = ref<any[]>([])
 const productos = ref<any[]>([])
 const categorias = ref<string[]>([])
+const zonas = ref<Zona[]>([])
 const mesaSeleccionada = ref<number | null>(null)
 const mesaSeleccionadaId = ref<string | null>(null)
 const categoriaSeleccionada = ref('')
 const isEnviando = ref(false)
 
 // Estado UI Mapa
-const zonaActiva = ref('interior')
+const zonaActiva = ref('')
 const filtroActivo = ref('todas')
 
 // Estado Modal Ticket
 const mostrarModalTicket = ref(false)
 const numeroMesaTicket = ref<number | null>(null)
 
+let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 
@@ -49,10 +57,20 @@ onMounted(() => {
           nr: data.numero,
           capacity: data.capacidad ?? 4,
           status: data.estado === 'libre' ? 'available' : data.estado === 'preparando' ? 'preparing' : 'occupied',
+              zona: data.zona,
           x: posicionesGuardadas[d.id]?.x,
           y: posicionesGuardadas[d.id]?.y
         }
       })
+    })
+        
+    // Listener Zonas
+    const qZonas = query(collection(db, `locales/${localId.value}/zonas`), orderBy('nombre'))
+    unsubscribeZonas = onSnapshot(qZonas, (snapshot) => {
+      zonas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Zona[]
+      if (zonas.value.length > 0 && !zonas.value.some(z => z.nombre === zonaActiva.value)) {
+        zonaActiva.value = zonas.value[0].nombre
+      }
     })
 
     unsubscribeProductos = onSnapshot(collection(db, `locales/${localId.value}/productos`), (snapshot) => {
@@ -68,13 +86,16 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  unsubscribeZonas?.()
   unsubscribeMesas?.()
   unsubscribeProductos?.()
 })
 
 // --- LÓGICA DE FILTROS ---
 const mesasFiltradas = computed(() => {
-  let filtradas = tables.value
+  // Filtramos primero por la zona dinámica seleccionada
+  let filtradas = tables.value.filter(t => t.zona === zonaActiva.value || (!t.zona && zonas.value.length === 0))
+  
   if (filtroActivo.value === 'ocupadas') {
     filtradas = filtradas.filter(t => t.status === 'occupied')
   } else if (filtroActivo.value === 'disponibles') {
@@ -211,22 +232,30 @@ const enviarPedido = async () => {
 
     <aside class="pos-sidebar-container">
       <PosSidebar :user-email="currentUser?.email ?? undefined" :local-id="localId ?? undefined" :tables="tables"
-        :filtro-activo="filtroActivo" @logout="logout" @cambiar-filtro="(f) => filtroActivo = f"
+        :filtro-activo="filtroActivo" 
+        :zonas="zonas" 
+        :zona-activa="zonaActiva" 
+        @logout="logout" @cambiar-filtro="(f) => filtroActivo = f"
+        @cambiar-zona="(z) => zonaActiva = z"
         @abrir-modal-factura="abrirModalFactura" />
     </aside>
 
     <main class="pos-center-container">
       <header class="map-header">
         <div class="header-spacer"></div>
-        <div class="tabs-zone">
-          <button :class="{ active: zonaActiva === 'interior' }" @click="zonaActiva = 'interior'">🛋️ Interior</button>
-          <button :class="{ active: zonaActiva === 'terraza' }" @click="zonaActiva = 'terraza'">🌿 Terraza</button>
+        <div class="tabs-zone" v-if="zonas.length > 0">
+          <button v-for="z in zonas" :key="z.id" :class="{ active: zonaActiva === z.nombre }" @click="zonaActiva = z.nombre">
+            {{ z.icono }} {{ z.nombre }}
+          </button>
+        </div>
+        <div v-else class="tabs-zone">
+          <span style="color: #64748b; font-size: 0.85rem; font-weight: 500;">Buscando secciones...</span>
         </div>
       </header>
 
       <div class="map-area">
         <!-- Pasamos las mesas FILTRADAS al mapa -->
-        <PosFloorMap :zona="zonaActiva" :tables="mesasFiltradas" :mesa-seleccionada="mesaSeleccionada"
+        <PosFloorMap :zona="zonaActiva.toLowerCase()" :tables="mesasFiltradas" :mesa-seleccionada="mesaSeleccionada"
           @select-table="openTable" @update-position="actualizarPosicionMesa" />
 
         <!-- MENÚ FLOTANTE: Aparece sobre el mapa cuando seleccionas una mesa -->
