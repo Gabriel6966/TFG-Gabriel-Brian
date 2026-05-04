@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
-  collection, onSnapshot, query,
+  collection, onSnapshot, query, where,
   orderBy, doc, updateDoc, addDoc, Timestamp
 } from 'firebase/firestore'
 import { db } from '../firebase'
@@ -39,9 +39,15 @@ const filtroActivo = ref('todas')
 const mostrarModalTicket = ref(false)
 const numeroMesaTicket = ref<number | null>(null)
 
+// Estado Monitor Cliente
+const mostrarModalMonitor = ref(false)
+const comandasActivas = ref<any[]>([])
+const mesaMonitorSeleccionada = ref<number | null>(null)
+
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
+let unsubscribeComandas: (() => void) | null = null
 
 onMounted(() => {
   if (localId.value) {
@@ -82,6 +88,16 @@ onMounted(() => {
         categoriaSeleccionada.value = cats[0]
       }
     })
+
+    // Listener Comandas (pendientes, en preparación o listas)
+    // Listener Comandas (Espejo total: Muestra cualquier estado que no sea entregado)
+    const qComandas = query(
+      collection(db, `locales/${localId.value}/comandas`),
+      where('estado', '!=', 'entregado')
+    )
+    unsubscribeComandas = onSnapshot(qComandas, (snapshot) => {
+      comandasActivas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+    })
   }
 })
 
@@ -89,6 +105,7 @@ onUnmounted(() => {
   unsubscribeZonas?.()
   unsubscribeMesas?.()
   unsubscribeProductos?.()
+  unsubscribeComandas?.()
 })
 
 // --- LÓGICA DE FILTROS ---
@@ -97,13 +114,21 @@ const mesasFiltradas = computed(() => {
   let filtradas = tables.value.filter(t => t.zona === zonaActiva.value || (!t.zona && zonas.value.length === 0))
   
   if (filtroActivo.value === 'ocupadas') {
-    filtradas = filtradas.filter(t => t.status === 'occupied')
+    filtradas = filtradas.filter(t => t.status === 'occupied' || t.status === 'preparing')
   } else if (filtroActivo.value === 'disponibles') {
     filtradas = filtradas.filter(t => t.status === 'available')
-  } else if (filtroActivo.value === 'cocina') {
-    filtradas = filtradas.filter(t => t.status === 'preparing')
   }
   return filtradas
+})
+
+// --- LÓGICA DEL MONITOR DE CLIENTE ---
+const mesasConComandas = computed(() => {
+  const mesas = comandasActivas.value.map(c => c.mesaNumero)
+  return [...new Set(mesas)].sort((a, b) => a - b)
+})
+
+const comandasMesaSeleccionada = computed(() => {
+  return comandasActivas.value.filter(c => c.mesaNumero === mesaMonitorSeleccionada.value)
 })
 
 const productosFiltrados = computed(() =>
@@ -135,6 +160,24 @@ const actualizarPosicionMesa = (id: string, x: number, y: number) => {
     tables.value[tableIndex].x = x
     tables.value[tableIndex].y = y
   }
+}
+
+// --- LÓGICA PARA DESPACHAR COMANDAS ---
+const marcarComoEntregada = async (comandaId: string, mesaId: string) => {
+  if (!localId.value) return
+  try {
+    // 1. Marcar la comanda como entregada
+    await updateDoc(doc(db, `locales/${localId.value}/comandas`, comandaId), {
+      estado: 'entregado'
+    })
+    // 2. Actualizar la mesa a 'ocupada' si no hay más platos preparándose
+    const quedanPendientes = comandasActivas.value.some(
+      c => c.mesaId === mesaId && c.id !== comandaId && c.estado !== 'entregado' && c.estado !== 'listo' && c.estado !== 'terminado'
+    )
+    if (!quedanPendientes) {
+      await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaId), { estado: 'ocupada' })
+    }
+  } catch (error) { console.error('Error al entregar comanda:', error) }
 }
 
 // --- LÓGICA DEL TICKET / FACTURA ---
@@ -237,6 +280,7 @@ const enviarPedido = async () => {
         :zona-activa="zonaActiva" 
         @logout="logout" @cambiar-filtro="(f) => filtroActivo = f"
         @cambiar-zona="(z) => zonaActiva = z"
+        @abrir-modal-monitor="mostrarModalMonitor = true"
         @abrir-modal-factura="abrirModalFactura" />
     </aside>
 
@@ -338,6 +382,52 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
+    <!-- MODAL MONITOR DE ESTADO PARA EL CLIENTE -->
+    <transition name="fade">
+      <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
+        <div class="monitor-modal">
+          <div class="monitor-header">
+            <h2>📺 Estado de Pedidos en Tiempo Real</h2>
+            <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">Cerrar</button>
+          </div>
+          <div class="monitor-body">
+            <div class="monitor-sidebar">
+              <h3 style="margin-bottom: 12px; font-size: 0.9rem; color: #64748b;">MESAS ACTIVAS</h3>
+              <div v-if="mesasConComandas.length === 0" class="ticket-empty">No hay pedidos en curso</div>
+              <button v-for="mesa in mesasConComandas" :key="mesa"
+                      class="monitor-table-btn"
+                      :class="{ active: mesaMonitorSeleccionada === mesa }"
+                      @click="mesaMonitorSeleccionada = mesa">
+                Mesa {{ mesa }}
+              </button>
+            </div>
+            <div class="monitor-content">
+              <div v-if="!mesaMonitorSeleccionada" class="ticket-empty" style="margin-top: 40px;">Selecciona una mesa en la izquierda para ver el estado de sus platos.</div>
+              <div v-else>
+                <h3 style="margin-bottom: 20px; font-size: 1.2rem; color: #0f172a;">Comandas de la Mesa {{ mesaMonitorSeleccionada }}</h3>
+                <div v-for="comanda in comandasMesaSeleccionada" :key="comanda.id" class="comanda-card">
+                  <div class="c-header">
+                    <span class="c-time">🕒 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
+                    <!-- Limpiamos guiones bajos para que se lea "EN PREPARACION" en vez de "EN_PREPARACION" -->
+                    <span class="c-status" :class="comanda.estado.toLowerCase().replace(/[\s_]+/g, '-')">{{ comanda.estado.replace(/_/g, ' ').toUpperCase() }}</span>
+                  </div>
+                  <ul class="c-lines">
+                    <li v-for="linea in comanda.lineas" :key="linea.productoId">
+                      <strong>{{ linea.cantidad }}x</strong> {{ linea.nombre }}
+                      <!-- Muestra el estado individual de cada plato si la cocina trabaja así -->
+                      <span v-if="linea.estado" class="linea-estado" :class="linea.estado.toLowerCase().replace(/[\s_]+/g, '-')">{{ linea.estado.replace(/_/g, ' ').toUpperCase() }}</span>
+                    </li>
+                  </ul>
+                  <div class="c-actions" v-if="comanda.estado !== 'pendiente' && comanda.estado !== 'entregado'">
+                    <button class="btn-entregar" @click="marcarComoEntregada(comanda.id, comanda.mesaId)">✓ Marcar como Servido</button>
+                  </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </transition>
   </div>
 </template>
 
@@ -741,4 +831,86 @@ const enviarPedido = async () => {
     opacity: 1;
   }
 }
+
+/* ── MODAL MONITOR DE ESTADO ── */
+.monitor-modal {
+  background: white;
+  width: 800px;
+  max-width: 95vw;
+  height: 600px;
+  max-height: 90vh;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  animation: modalIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.monitor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.monitor-header h2 { margin: 0; font-size: 1.2rem; color: #0f172a; font-weight: 800; }
+.monitor-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.monitor-sidebar {
+  width: 220px;
+  background: #f1f5f9;
+  border-right: 1px solid #e2e8f0;
+  padding: 16px;
+  overflow-y: auto;
+}
+.monitor-table-btn {
+  width: 100%;
+  padding: 14px;
+  margin-bottom: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: white;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+  color: #334155;
+  text-align: left;
+  transition: 0.2s;
+}
+.monitor-table-btn:hover { border-color: #94a3b8; }
+.monitor-table-btn.active { background: #4f46e5; color: white; border-color: #4f46e5; }
+.monitor-content {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  background: white;
+}
+.comanda-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: #f8fafc;
+}
+.c-header { display: flex; justify-content: space-between; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed #cbd5e1; }
+.c-time { color: #475569; font-weight: 600; font-size: 0.95rem; }
+.c-status { font-size: 0.8rem; font-weight: 800; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.5px; }
+.c-status { font-size: 0.8rem; font-weight: 800; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.5px; background: #e2e8f0; color: #334155; border: 1px solid #cbd5e1; }
+.c-status.pendiente { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
+.c-status.preparando { background: #fef08a; color: #b45309; border: 1px solid #fde047; }
+.c-status.listo { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
+.c-status.preparando, .c-status.en-cocina, .c-status.cocinando { background: #fef08a; color: #b45309; border: 1px solid #fde047; }
+.c-status.listo, .c-status.terminado, .c-status.preparado { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
+.c-lines { list-style: none; padding: 0; margin: 0; }
+.c-lines li { padding: 6px 0; color: #0f172a; font-size: 1.05rem; }
+.linea-estado { font-size: 0.75rem; font-weight: 800; padding: 2px 6px; border-radius: 12px; margin-left: 8px; background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; text-transform: uppercase; }
+.linea-estado.preparando, .linea-estado.en-cocina, .linea-estado.cocinando { background: #fef08a; color: #b45309; border-color: #fde047; }
+.linea-estado.listo, .linea-estado.terminado, .linea-estado.preparado { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
+.c-actions { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #cbd5e1; display: flex; justify-content: flex-end; }
+.btn-entregar { background: #16a34a; color: white; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+.btn-entregar:hover { background: #15803d; }
 </style>

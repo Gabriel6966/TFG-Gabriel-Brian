@@ -11,13 +11,13 @@ const props = defineProps<{
 }>()
 
 // NUEVOS EVENTOS
-const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona'])
+const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor'])
 
 const resumen = computed(() => {
     return {
         disponibles: props.tables.filter(t => t.status === 'available').length,
         ocupadas: props.tables.filter(t => t.status === 'occupied').length,
-        preparacion: 0,
+        preparacion: props.tables.filter(t => t.status === 'preparing').length,
         reservadas: 0
     }
 })
@@ -63,7 +63,7 @@ const secciones = computed(() => {
                     </div>
                     <div class="stat-card preparing">
                         <span class="number">{{ resumen.preparacion }}</span>
-                        <span class="label">Ver Cocina</span>
+                        <span class="label">En Cocina</span>
                     </div>
                     <div class="stat-card reserved">
                         <span class="number">{{ resumen.reservadas }}</span>
@@ -101,14 +101,13 @@ const secciones = computed(() => {
                         @click="emit('cambiar-filtro', 'disponibles')">
                         <span class="indicator green"></span> Solo disponibles
                     </button>
-                    <button class="filter-pill" :class="{ active: filtroActivo === 'cocina' }"
-                        @click="emit('cambiar-filtro', 'cocina')">
-                        <span class="indicator yellow"></span> Ver Cocina
-                    </button>
                 </div>
             </section>
 
             <section class="sidebar-section action-section">
+                <button class="btn-monitor-sidebar" @click="emit('abrir-modal-monitor')">
+                    📺 Monitor de Pedidos
+                </button>
                 <!-- ¡Abre el modal de la factura en el MesasView! -->
                 <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
                     ✓ Finalizar Servicio
@@ -381,6 +380,23 @@ const secciones = computed(() => {
     margin-top: 10px;
     padding-top: 20px;
     border-top: 1px dashed #e2e8f0;
+}
+
+.btn-monitor-sidebar {
+    width: 100%;
+    padding: 12px 14px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #1d4ed8;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 10px;
+}
+.btn-monitor-sidebar:hover {
+    background: #dbeafe;
 }
 
 .btn-liberar-sidebar {
