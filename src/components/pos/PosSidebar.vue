@@ -6,10 +6,12 @@ const props = defineProps<{
     localId?: string
     tables: any[]
     filtroActivo: string // NUEVO: Para saber qué botón pintar de color
+    zonas?: any[]
+    zonaActiva?: string
 }>()
 
 // NUEVOS EVENTOS
-const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro'])
+const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona'])
 
 const resumen = computed(() => {
     return {
@@ -20,12 +22,15 @@ const resumen = computed(() => {
     }
 })
 
-// BARRA ELIMINADA
+// Secciones dinámicas conectadas a Firebase
 const secciones = computed(() => {
-    return [
-        { nombre: 'Salón principal', icon: '🛋️', cantidad: props.tables.length, activa: true },
-        { nombre: 'Terraza', icon: '🌿', cantidad: 6, activa: false }
-    ]
+    if (!props.zonas) return []
+    return props.zonas.map(z => ({
+        nombre: z.nombre,
+        icon: z.icono,
+        cantidad: props.tables.filter(t => t.zona === z.nombre).length,
+        activa: props.zonaActiva === z.nombre
+    }))
 })
 </script>
 
@@ -71,7 +76,8 @@ const secciones = computed(() => {
                 <h3 class="section-title">Secciones</h3>
                 <div class="sections-list">
                     <button v-for="sec in secciones" :key="sec.nombre" class="section-item"
-                        :class="{ active: sec.activa }">
+                        :class="{ active: sec.activa }"
+                        @click="emit('cambiar-zona', sec.nombre)">
                         <span class="sec-icon">{{ sec.icon }}</span>
                         <span class="sec-name">{{ sec.nombre }}</span>
                         <span class="sec-count">{{ sec.cantidad }}</span>
