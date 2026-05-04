@@ -7,6 +7,7 @@ import {
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 import EmojiPicker from 'vue3-emoji-picker'
+import PosFloorMap from '../components/pos/PosFloorMap.vue'
 
 // --- Interfaces TypeScript ---
 interface Mesa {
@@ -78,6 +79,10 @@ const nuevaInvitacion = ref({
   rol: 'camarero' as 'admin' | 'camarero' | 'cocinero'
 })
 
+// NUEVO: Estado del mapa de mesas
+const posicionesMesas = ref<Record<string, {x: number, y: number}>>({})
+const mesaSeleccionada = ref<number | null>(null)
+
 // Limpiadores de listeners
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
@@ -87,6 +92,8 @@ let unsubscribeEmpleados: (() => void) | null = null
 
 onMounted(() => {
   if (!localId.value) return
+
+  posicionesMesas.value = JSON.parse(localStorage.getItem(`posicionesMesas_${localId.value}`) || '{}')
 
   // Listener mesas
   const qMesas = query(
@@ -178,6 +185,25 @@ const onSelectEmojiProducto = (emoji: any) => {
   mostrarSelectorProducto.value = false
 }
 
+const handleUpdatePosition = (id: string, x: number, y: number) => {
+  posicionesMesas.value[id] = { x, y }
+  localStorage.setItem(`posicionesMesas_${localId.value}`, JSON.stringify(posicionesMesas.value))
+}
+
+const handleSelectTable = (table: any) => {
+  mesaSeleccionada.value = table.nr
+}
+
+const mesasParaMapa = computed(() => {
+  return mesas.value.map(m => ({
+    id: m.id,
+    nr: m.numero,
+    status: m.estado === 'libre' ? 'available' : m.estado === 'ocupada' ? 'occupied' : 'preparing',
+    capacity: m.capacidad,
+    x: posicionesMesas.value[m.id]?.x,
+    y: posicionesMesas.value[m.id]?.y
+  }))
+})
 
 // ── MESAS ──────────────────────────────────────────────────────────────────
 
@@ -398,20 +424,35 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
           </div>
         </div>
 
-        <div class="tables-grid">
-          <div v-for="mesa in mesas" :key="mesa.id" class="mesa-card">
-            <div class="mesa-card-header">
-              <input type="text" class="mesa-nombre-input" :value="mesa.nombre || `Mesa ${mesa.numero}`"
-                @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)">
-              <div class="mesa-header-actions">
-                <span class="mesa-estado" :class="mesa.estado">{{ mesa.estado }}</span>
-                <button class="btn-eliminar-mesa" @click="eliminarMesa(mesa.id, mesa.numero)">✕</button>
+        <div class="mesas-admin-layout">
+          <!-- MAPA INTERACTIVO -->
+          <div class="mapa-admin-container">
+            <PosFloorMap
+              zona="interior"
+              :tables="mesasParaMapa"
+              :mesa-seleccionada="mesaSeleccionada"
+              :is-editable="true"
+              @select-table="(table) => handleSelectTable(table)"
+              @update-position="(id, x, y) => handleUpdatePosition(id, x, y)"
+            />
+          </div>
+
+          <!-- LISTA DE MESAS (SIDEBAR DERECHO) -->
+          <div class="mesas-lista-admin">
+            <div v-for="mesa in mesas" :key="mesa.id" class="mesa-card" :class="{ 'selected-card': mesaSeleccionada === mesa.numero }" @click="mesaSeleccionada = mesa.numero">
+              <div class="mesa-card-header">
+                <input type="text" class="mesa-nombre-input" :value="mesa.nombre || `Mesa ${mesa.numero}`"
+                  @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)">
+                <div class="mesa-header-actions">
+                  <span class="mesa-estado" :class="mesa.estado">{{ mesa.estado }}</span>
+                  <button class="btn-eliminar-mesa" @click.stop="eliminarMesa(mesa.id, mesa.numero)">✕</button>
+                </div>
               </div>
-            </div>
-            <div class="mesa-capacidad">
-              <label>Capacidad</label>
-              <input type="number" :value="mesa.capacidad" min="1" max="20"
-                @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)">
+              <div class="mesa-capacidad">
+                <label>Capacidad</label>
+                <input type="number" :value="mesa.capacidad" min="1" max="20"
+                  @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)">
+              </div>
             </div>
           </div>
         </div>
@@ -865,10 +906,31 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 /* ── MESAS ── */
-.tables-grid {
+.mesas-admin-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+  align-items: start;
+}
+
+.mapa-admin-container {
+  height: 600px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  background: #fff;
+  position: sticky;
+  top: 0;
+}
+
+.mesas-lista-admin {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 8px;
 }
 
 .mesa-card {
@@ -880,6 +942,17 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   flex-direction: column;
   gap: 12px;
   border: 1px solid #e2e8f0;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.mesa-card:hover {
+  border-color: #cbd5e1;
+}
+
+.mesa-card.selected-card {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
 }
 
 .mesa-card-header {
@@ -1403,6 +1476,15 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 @media (max-width: 900px) {
   .productos-layout {
     grid-template-columns: 1fr;
+  }
+  
+  .mesas-admin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mapa-admin-container {
+    position: static;
+    height: 400px;
   }
 
   .product-form-card {

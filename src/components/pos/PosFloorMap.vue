@@ -5,23 +5,26 @@ const props = defineProps<{
     zona: string
     tables: any[]
     mesaSeleccionada: number | null
+    isEditable?: boolean
 }>()
 
-const emit = defineEmits(['select-table', 'update-position'])
+const emit = defineEmits<{
+    (e: 'select-table', table: any): void
+    (e: 'update-position', id: string, x: number, y: number): void
+}>()
 
 const mapRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
 const draggedTableId = ref<string | null>(null)
 const localPositions = ref<Record<string, { x: number, y: number }>>({})
 
-// LÓGICA CORREGIDA: Ahora las mesas nacen más abajo (y: 35) para no pisar la barra
 const calcularPosicionInicial = (index: number) => {
     const cols = 4
     const row = Math.floor(index / cols)
     const col = index % cols
     return {
         x: 12 + (col * 25),
-        y: 35 + (row * 22)  // <-- ¡Cambiado de 15 a 35!
+        y: 35 + (row * 22)
     }
 }
 
@@ -43,10 +46,11 @@ const getTableStyle = (table: any) => {
 }
 
 const startDrag = (event: MouseEvent, table: any) => {
+    emit('select-table', table)
+    if (!props.isEditable) return
     if (event.button !== 0) return
     isDragging.value = true
     draggedTableId.value = table.id
-    emit('select-table', table)
 
     document.addEventListener('mousemove', onDrag)
     document.addEventListener('mouseup', stopDrag)
@@ -81,7 +85,8 @@ const stopDrag = () => {
             <div v-for="table in tables" :key="table.id" class="table-node" :class="[
                 table.status,
                 { 'selected': mesaSeleccionada === table.nr },
-                { 'dragging': draggedTableId === table.id }
+                { 'dragging': draggedTableId === table.id },
+                { 'editable': isEditable }
             ]" :style="getTableStyle(table)" @mousedown.stop="startDrag($event, table)">
                 <div class="table-body">
                     <span class="t-number">{{ table.nr }}</span>
@@ -132,7 +137,6 @@ const stopDrag = () => {
 </template>
 
 <style scoped>
-/* LOS ESTILOS SON EXACTAMENTE LOS MISMOS QUE TENÍAS */
 .floor-map-wrapper {
     width: 100%;
     height: 100%;
@@ -168,9 +172,12 @@ const stopDrag = () => {
     height: 90px;
     border-radius: 16px;
     transform: translate(-50%, -50%);
-    cursor: grab;
     transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
     z-index: 10;
+}
+
+.table-node.editable {
+    cursor: grab;
 }
 
 .table-node.dragging {
