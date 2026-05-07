@@ -37,12 +37,12 @@ const filtroActivo = ref('todas')
 
 // Estado Modal Ticket
 const mostrarModalTicket = ref(false)
-const numeroMesaTicket = ref<number | null>(null)
+const mesaIdTicket = ref<string | null>(null)
 
 // Estado Monitor Cliente
 const mostrarModalMonitor = ref(false)
 const comandasActivas = ref<any[]>([])
-const mesaMonitorSeleccionada = ref<number | null>(null)
+const mesaMonitorSeleccionada = ref<string | null>(null)
 
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
@@ -121,14 +121,34 @@ const mesasFiltradas = computed(() => {
   return filtradas
 })
 
+// Todas las mesas que no están libres (útil para el selector de cobrar ticket)
+const mesasOcupadasTodas = computed(() => {
+  return tables.value.filter(t => t.status === 'occupied' || t.status === 'preparing')
+})
+
 // --- LÓGICA DEL MONITOR DE CLIENTE ---
 const mesasConComandas = computed(() => {
-  const mesas = comandasActivas.value.map(c => c.mesaNumero)
-  return [...new Set(mesas)].sort((a, b) => a - b)
+  const mesasMap = new Map()
+  for (const c of comandasActivas.value) {
+    if (!mesasMap.has(c.mesaId)) {
+      // Intentar recuperar la zona de la mesa original si no viene en la comanda
+      const mesaActual = tables.value.find(t => t.id === c.mesaId)
+      mesasMap.set(c.mesaId, {
+        id: c.mesaId,
+        numero: c.mesaNumero,
+        zona: c.zona || mesaActual?.zona || 'Sin zona'
+      })
+    }
+  }
+  // Ordenar primero por nombre de zona y luego por número de mesa
+  return Array.from(mesasMap.values()).sort((a, b) => {
+    if (a.zona === b.zona) return a.numero - b.numero
+    return a.zona.localeCompare(b.zona)
+  })
 })
 
 const comandasMesaSeleccionada = computed(() => {
-  return comandasActivas.value.filter(c => c.mesaNumero === mesaMonitorSeleccionada.value)
+  return comandasActivas.value.filter(c => c.mesaId === mesaMonitorSeleccionada.value)
 })
 
 const productosFiltrados = computed(() =>
@@ -183,15 +203,15 @@ const marcarComoEntregada = async (comandaId: string, mesaId: string) => {
 // --- LÓGICA DEL TICKET / FACTURA ---
 const abrirModalFactura = () => {
   // Si ya hay una mesa seleccionada, la ponemos por defecto en el ticket
-  numeroMesaTicket.value = mesaSeleccionada.value || null
+  mesaIdTicket.value = mesaSeleccionadaId.value || null
   mostrarModalTicket.value = true
 }
 
 const guardarCopiaYFinalizar = async () => {
-  if (!numeroMesaTicket.value || !localId.value) return
+  if (!mesaIdTicket.value || !localId.value) return
 
-  const mesaALiberar = tables.value.find(t => t.nr === numeroMesaTicket.value)
-  if (!mesaALiberar) return alert(`No existe la mesa ${numeroMesaTicket.value}`)
+  const mesaALiberar = tables.value.find(t => t.id === mesaIdTicket.value)
+  if (!mesaALiberar) return alert('Seleccione una mesa válida.')
   if (mesaALiberar.status === 'available') return alert('Esta mesa ya está libre.')
 
   try {
@@ -201,7 +221,8 @@ const guardarCopiaYFinalizar = async () => {
 
     facturas.push({
       id: Date.now().toString(),
-      mesa: numeroMesaTicket.value,
+      mesa: mesaALiberar.nr,
+      zona: mesaALiberar.zona || 'Sin zona',
       fecha: new Date().toLocaleString(),
       total: cartStore.totalPrice,
       items: cartStore.items.length > 0 ? cartStore.items : [{ name: 'Consumo genérico', price: 0, quantity: 1 }] // Mock por si el carrito está vacío al cobrar
@@ -214,7 +235,7 @@ const guardarCopiaYFinalizar = async () => {
       estado: 'libre'
     })
 
-    if (mesaSeleccionada.value === numeroMesaTicket.value) {
+    if (mesaSeleccionadaId.value === mesaIdTicket.value) {
       cartStore.clear()
       mesaSeleccionada.value = null
       mesaSeleccionadaId.value = null
@@ -235,10 +256,13 @@ const enviarPedido = async () => {
 
   isEnviando.value = true
 
+  const mesaObj = tables.value.find(t => t.id === mesaSeleccionadaId.value)
+
   try {
     await addDoc(collection(db, `locales/${localId.value}/comandas`), {
       mesaId: mesaSeleccionadaId.value,
       mesaNumero: mesaSeleccionada.value,
+      zona: mesaObj?.zona || 'Sin zona',
       usuarioId: currentUser.value.uid,
       fechaHora: Timestamp.now(),
       estado: 'pendiente',
@@ -346,13 +370,18 @@ const enviarPedido = async () => {
             <div class="ticket-divider"></div>
 
             <div class="ticket-input-group">
-              <label>MESA A COBRAR:</label>
-              <input type="number" v-model="numeroMesaTicket" placeholder="Ej: 2" class="ticket-input" />
+              <label style="flex: 1;">MESA A COBRAR:</label>
+              <select v-model="mesaIdTicket" class="ticket-input select-mesa">
+                <option :value="null" disabled>Elige...</option>
+                <option v-for="m in mesasOcupadasTodas" :key="m.id" :value="m.id">
+                  Mesa {{ m.nr }} ({{ m.zona || 'Sin zona' }})
+                </option>
+              </select>
             </div>
 
             <div class="ticket-divider"></div>
 
-            <div v-if="cartStore.items.length > 0 && mesaSeleccionada === numeroMesaTicket" class="ticket-items">
+            <div v-if="cartStore.items.length > 0 && mesaSeleccionadaId === mesaIdTicket" class="ticket-items">
               <div v-for="item in cartStore.items" :key="item.id" class="t-item">
                 <span class="t-qty">{{ item.quantity }}x</span>
                 <span class="t-name">{{ item.name }}</span>
@@ -367,14 +396,14 @@ const enviarPedido = async () => {
 
             <div class="ticket-total">
               <span>TOTAL</span>
-              <span v-if="mesaSeleccionada === numeroMesaTicket">{{ cartStore.totalPrice.toFixed(2) }}€</span>
+              <span v-if="mesaSeleccionadaId === mesaIdTicket">{{ cartStore.totalPrice.toFixed(2) }}€</span>
               <span v-else>-- €</span>
             </div>
           </div>
 
           <div class="modal-actions">
             <button class="btn-cancelar" @click="mostrarModalTicket = false">Cancelar</button>
-            <button class="btn-cobrar" @click="guardarCopiaYFinalizar" :disabled="!numeroMesaTicket">
+            <button class="btn-cobrar" @click="guardarCopiaYFinalizar" :disabled="!mesaIdTicket">
               💳 Guardar Copia y Finalizar
             </button>
           </div>
@@ -394,17 +423,21 @@ const enviarPedido = async () => {
             <div class="monitor-sidebar">
               <h3 style="margin-bottom: 12px; font-size: 0.9rem; color: #64748b;">MESAS ACTIVAS</h3>
               <div v-if="mesasConComandas.length === 0" class="ticket-empty">No hay pedidos en curso</div>
-              <button v-for="mesa in mesasConComandas" :key="mesa"
+              <button v-for="mesa in mesasConComandas" :key="mesa.id"
                       class="monitor-table-btn"
-                      :class="{ active: mesaMonitorSeleccionada === mesa }"
-                      @click="mesaMonitorSeleccionada = mesa">
-                Mesa {{ mesa }}
+                      :class="{ active: mesaMonitorSeleccionada === mesa.id }"
+                      @click="mesaMonitorSeleccionada = mesa.id">
+                Mesa {{ mesa.numero }}
+                <br><small style="font-weight: 500; opacity: 0.85;">{{ mesa.zona }}</small>
               </button>
             </div>
             <div class="monitor-content">
               <div v-if="!mesaMonitorSeleccionada" class="ticket-empty" style="margin-top: 40px;">Selecciona una mesa en la izquierda para ver el estado de sus platos.</div>
               <div v-else>
-                <h3 style="margin-bottom: 20px; font-size: 1.2rem; color: #0f172a;">Comandas de la Mesa {{ mesaMonitorSeleccionada }}</h3>
+                <h3 style="margin-bottom: 20px; font-size: 1.2rem; color: #0f172a;">
+                  Comandas de la Mesa {{ mesasConComandas.find(m => m.id === mesaMonitorSeleccionada)?.numero }}
+                  <span style="color: #64748b; font-weight: normal; font-size: 1.1rem;">({{ mesasConComandas.find(m => m.id === mesaMonitorSeleccionada)?.zona }})</span>
+                </h3>
                 <div v-for="comanda in comandasMesaSeleccionada" :key="comanda.id" class="comanda-card">
                   <div class="c-header">
                     <span class="c-time">🕒 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
@@ -723,6 +756,12 @@ const enviarPedido = async () => {
   border: 1px solid #ccc;
   border-radius: 4px;
   padding: 4px;
+}
+
+.select-mesa {
+  width: auto;
+  font-size: 1rem;
+  max-width: 160px;
 }
 
 .ticket-items {
