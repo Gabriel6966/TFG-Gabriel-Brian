@@ -248,8 +248,10 @@ const generarMesas = async () => {
   if (!zonaActiva.value) zonaActiva.value = zonas.value[0].nombre
   isLoading.value = true
   try {
-    const ultimaNumero = mesas.value.length > 0
-      ? Math.max(...mesas.value.map(m => m.numero)) : 0
+    // Filtrar por zona activa para que la numeración sea independiente por zona
+    const mesasEnZona = mesas.value.filter(m => m.zona === zonaActiva.value)
+    const ultimaNumero = mesasEnZona.length > 0
+      ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
       
     for (let i = 1; i <= cantidadMesas.value; i++) {
       await addDoc(collection(db, `locales/${localId.value}/mesas`), {
@@ -493,7 +495,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
         </div>
 
         <div class="tabs-zone-admin" v-if="zonas.length > 0">
-          <button v-for="z in zonas" :key="z.id" :class="{ active: zonaActiva === z.nombre }" @click="zonaActiva = z.nombre">
+          <button v-for="z in zonas" :key="z.id" :class="{ active: zonaActiva === z.nombre }" @click="zonaActiva = z.nombre; mesaSeleccionada = null">
             {{ z.icono }} {{ z.nombre }}
           </button>
         </div>
