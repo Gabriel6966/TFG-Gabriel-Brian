@@ -5,12 +5,13 @@ const props = defineProps<{
     userEmail?: string
     localId?: string
     tables: any[]
-    filtroActivo: string // NUEVO: Para saber qué botón pintar de color
+    filtroActivo: string // Para saber qué botón pintar de color
     zonas?: any[]
     zonaActiva?: string
+    comandasListasCount?: number // NUEVO: Recibe el número de comandas listas
 }>()
 
-// NUEVOS EVENTOS
+// EVENTOS
 const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor'])
 
 const resumen = computed(() => {
@@ -88,7 +89,6 @@ const secciones = computed(() => {
             <section class="sidebar-section">
                 <h3 class="section-title">Filtros rápidos</h3>
                 <div class="filters-list">
-                    <!-- Emitimos el nombre del filtro al hacer click -->
                     <button class="filter-pill" :class="{ active: filtroActivo === 'todas' }"
                         @click="emit('cambiar-filtro', 'todas')">
                         <span class="indicator blue"></span> Todas las mesas
@@ -107,8 +107,10 @@ const secciones = computed(() => {
             <section class="sidebar-section action-section">
                 <button class="btn-monitor-sidebar" @click="emit('abrir-modal-monitor')">
                     📺 Monitor de Pedidos
+                    <span v-if="comandasListasCount && comandasListasCount > 0" class="badge">
+                        {{ comandasListasCount }}
+                    </span>
                 </button>
-                <!-- ¡Abre el modal de la factura en el MesasView! -->
                 <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
                     ✓ Finalizar Servicio
                 </button>
@@ -394,7 +396,12 @@ const secciones = computed(() => {
     cursor: pointer;
     transition: all 0.2s;
     margin-bottom: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
 }
+
 .btn-monitor-sidebar:hover {
     background: #dbeafe;
 }
@@ -419,5 +426,26 @@ const secciones = computed(() => {
     background: #f8fafc;
     border-color: #94a3b8;
     color: #0f172a;
+}
+
+/* NUEVO: Estilo para la burbuja de notificación roja */
+.badge {
+    background-color: #ef4444;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+    animation: pop 0.3s ease-out;
+}
+
+@keyframes pop {
+    0% { transform: scale(0.5); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
 }
 </style>

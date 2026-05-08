@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
   query, orderBy, where, deleteDoc, doc, updateDoc
@@ -7,7 +7,7 @@ import {
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 import EmojiPicker from 'vue3-emoji-picker'
-import PosFloorMap from '../components/pos/PosFloorMap.vue'
+import FloorEditor from '../components/pos/FloorEditor.vue'
 
 // --- Interfaces TypeScript ---
 interface Mesa {
@@ -59,127 +59,120 @@ interface Empleado {
   localId: string
 }
 
+interface Factura {
+  id: string
+  mesaNumero: number
+  zona: string
+  usuarioNombre: string
+  metodoPago: 'efectivo' | 'tarjeta'
+  total: number
+  fechaDia: string
+  fecha: any
+  items: any[]
+}
+
 const { logout, localId } = useAuth()
 
-const currentTab = ref('mesas')
+const currentTab = ref('finanzas')
 const mesas = ref<Mesa[]>([])
 const productos = ref<Producto[]>([])
 const categorias = ref<Categoria[]>([])
 const zonas = ref<Zona[]>([])
 const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
+const facturas = ref<Factura[]>([])
+
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
 
-// Estado para el filtro de roles
+// ── FILTROS ──
 const filtroRol = ref('todos')
+const filtroFecha = ref(new Date().toISOString().split('T')[0])
+const finanzasSubTab = ref('tickets')
+const filtroFEmpleado = ref('todos')
+const filtroFPago = ref('todos')
 
-// NUEVO: EMOJI PICKER - Estados para abrir/cerrar los teclados
+// ── MODALES ──
 const mostrarSelectorCategoria = ref(false)
 const mostrarSelectorProducto = ref(false)
 const mostrarSelectorZona = ref(false)
+const mostrarModalZonas = ref(false)
+const mostrarModalCategorias = ref(false)
+const mostrarModalEditarFactura = ref(false)
+const mostrarModalDetalleFactura = ref(false)
 
-// Formularios
+// ── FORMULARIOS ──
 const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️' })
 const nuevaZona = ref({ nombre: '', icono: '🛋️' })
-const nuevaInvitacion = ref({
-  email: '',
-  rol: 'camarero' as 'admin' | 'camarero' | 'cocinero'
-})
+const nuevaInvitacion = ref({ email: '', rol: 'camarero' as 'admin' | 'camarero' | 'cocinero' })
+const facturaEditando = ref<Partial<Factura>>({})
+const facturaSeleccionada = ref<Factura | null>(null)
+const nuevoItemSeleccionado = ref('')
 
-// NUEVO: Estado del mapa de mesas
-const posicionesMesas = ref<Record<string, {x: number, y: number}>>({})
+// ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
 const zonaActiva = ref('')
 
-// Limpiadores de listeners
+// Posiciones guardadas en localStorage para el FloorEditor
+const posicionesMesas = ref<Record<string, { x: number, y: number }>>({})
+
+// ── LISTENERS ──
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 let unsubscribeCategorias: (() => void) | null = null
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeInvitaciones: (() => void) | null = null
 let unsubscribeEmpleados: (() => void) | null = null
+let unsubscribeFacturas: (() => void) | null = null
 
-onMounted(() => {
-  if (!localId.value) return
+// ── COMPUTED: FINANZAS ──
+const totalVentas = computed(() => facturas.value.reduce((acc, f) => acc + f.total, 0))
+const totalEfectivo = computed(() => facturas.value.filter(f => f.metodoPago === 'efectivo').reduce((acc, f) => acc + f.total, 0))
+const totalTarjeta = computed(() => facturas.value.filter(f => f.metodoPago === 'tarjeta').reduce((acc, f) => acc + f.total, 0))
+const numeroPedidos = computed(() => facturas.value.length)
+const ticketMedio = computed(() => numeroPedidos.value > 0 ? (totalVentas.value / numeroPedidos.value) : 0)
 
-  posicionesMesas.value = JSON.parse(localStorage.getItem(`posicionesMesas_${localId.value}`) || '{}')
-
-  // Listener mesas
-  const qMesas = query(
-    collection(db, `locales/${localId.value}/mesas`),
-    orderBy('numero')
-  )
-  unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
-    mesas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Mesa[]
+const ventasPorEmpleado = computed(() => {
+  const mapa = new Map<string, { nombre: string, total: number, pedidos: number }>()
+  facturas.value.forEach(f => {
+    const emp = mapa.get(f.usuarioNombre)
+    if (emp) { emp.total += f.total; emp.pedidos += 1 }
+    else { mapa.set(f.usuarioNombre, { nombre: f.usuarioNombre, total: f.total, pedidos: 1 }) }
   })
+  return Array.from(mapa.values()).sort((a, b) => b.total - a.total)
+})
 
-  // Listener productos
-  const qProductos = query(
-    collection(db, `locales/${localId.value}/productos`),
-    orderBy('category')
-  )
-  unsubscribeProductos = onSnapshot(qProductos, (snapshot) => {
-    productos.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Producto[]
-  })
-
-  // Listener categorías
-  const qCategorias = query(
-    collection(db, `locales/${localId.value}/categorias`),
-    orderBy('nombre')
-  )
-  unsubscribeCategorias = onSnapshot(qCategorias, (snapshot) => {
-    categorias.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Categoria[]
-    if (!nuevoProducto.value.category && categorias.value.length > 0) {
-      nuevoProducto.value.category = categorias.value[0].nombre
-    }
-  })
-
-  // Listener zonas
-  const qZonas = query(
-    collection(db, `locales/${localId.value}/zonas`),
-    orderBy('nombre')
-  )
-  unsubscribeZonas = onSnapshot(qZonas, (snapshot) => {
-    zonas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Zona[]
-    if (!zonaActiva.value && zonas.value.length > 0) {
-      zonaActiva.value = zonas.value[0].nombre
-    }
-  })
-
-  // Listener invitaciones
-  const qInv = query(
-    collection(db, 'invitaciones'),
-    where('localId', '==', localId.value),
-    orderBy('creadoEn', 'desc')
-  )
-  unsubscribeInvitaciones = onSnapshot(qInv, (snapshot) => {
-    invitaciones.value = snapshot.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    })) as Invitacion[]
-  })
-
-  // Listener empleados
-  unsubscribeEmpleados = onSnapshot(collection(db, 'usuarios'), (snapshot) => {
-    empleados.value = snapshot.docs
-      .map(d => ({ id: d.id, ...d.data() } as Empleado))
-      .filter(u => u.localId === localId.value)
+const facturasFiltradas = computed(() => {
+  return facturas.value.filter(f => {
+    const matchEmp = filtroFEmpleado.value === 'todos' || f.usuarioNombre === filtroFEmpleado.value
+    const matchPago = filtroFPago.value === 'todos' || f.metodoPago === filtroFPago.value
+    return matchEmp && matchPago
   })
 })
 
-onUnmounted(() => {
-  unsubscribeMesas?.()
-  unsubscribeProductos?.()
-  unsubscribeCategorias?.()
-  unsubscribeZonas?.()
-  unsubscribeInvitaciones?.()
-  unsubscribeEmpleados?.()
-})
+const empleadosConVentasDia = computed(() =>
+  Array.from(new Set(facturas.value.map(f => f.usuarioNombre))).sort()
+)
 
-// Productos agrupados por categoría
+// ── COMPUTED: MESAS PARA EL EDITOR ──
+const mesasFiltradasPorZona = computed(() =>
+  mesas.value.filter(m => m.zona === zonaActiva.value || (!m.zona && zonas.value.length === 0))
+)
+
+const mesasParaMapa = computed(() =>
+  mesasFiltradasPorZona.value.map(m => ({
+    id: m.id,
+    nr: m.numero,
+    status: m.estado === 'libre' ? 'available' : m.estado === 'ocupada' ? 'occupied' : 'preparing',
+    capacity: m.capacidad,
+    x: posicionesMesas.value[m.id]?.x,
+    y: posicionesMesas.value[m.id]?.y
+  }))
+)
+
+// ── COMPUTED: MENÚ ──
 const productosPorCategoria = computed(() => {
   const grupos: Record<string, Producto[]> = {}
   for (const cat of categorias.value) {
@@ -192,30 +185,87 @@ const productosPorCategoria = computed(() => {
   return grupos
 })
 
-// Empleados filtrados por rol
-const empleadosFiltrados = computed(() => {
-  if (filtroRol.value === 'todos') return empleados.value
-  return empleados.value.filter(emp => emp.rol === filtroRol.value)
+// ── CARGA DE DATOS ──
+const cargarFacturas = (fecha: string) => {
+  if (!localId.value) return
+  if (unsubscribeFacturas) unsubscribeFacturas()
+  const qFacturas = query(
+    collection(db, `locales/${localId.value}/facturas`),
+    where('fechaDia', '==', fecha),
+    orderBy('fecha', 'desc')
+  )
+  unsubscribeFacturas = onSnapshot(qFacturas, (snapshot) => {
+    facturas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Factura[]
+  })
+}
+
+watch(filtroFecha, (newFecha) => cargarFacturas(newFecha))
+
+onMounted(() => {
+  if (!localId.value) return
+
+  posicionesMesas.value = JSON.parse(
+    localStorage.getItem(`posicionesMesas_${localId.value}`) || '{}'
+  )
+
+  cargarFacturas(filtroFecha.value)
+
+  unsubscribeMesas = onSnapshot(
+    query(collection(db, `locales/${localId.value}/mesas`), orderBy('numero')),
+    s => { mesas.value = s.docs.map(d => ({ id: d.id, ...d.data() })) as Mesa[] }
+  )
+
+  unsubscribeProductos = onSnapshot(
+    query(collection(db, `locales/${localId.value}/productos`), orderBy('category')),
+    s => { productos.value = s.docs.map(d => ({ id: d.id, ...d.data() })) as Producto[] }
+  )
+
+  unsubscribeCategorias = onSnapshot(
+    query(collection(db, `locales/${localId.value}/categorias`), orderBy('nombre')),
+    s => {
+      categorias.value = s.docs.map(d => ({ id: d.id, ...d.data() })) as Categoria[]
+      if (!nuevoProducto.value.category && categorias.value.length > 0) {
+        nuevoProducto.value.category = categorias.value[0].nombre
+      }
+    }
+  )
+
+  unsubscribeZonas = onSnapshot(
+    query(collection(db, `locales/${localId.value}/zonas`), orderBy('nombre')),
+    s => {
+      zonas.value = s.docs.map(d => ({ id: d.id, ...d.data() })) as Zona[]
+      if (!zonaActiva.value && zonas.value.length > 0) {
+        zonaActiva.value = zonas.value[0].nombre
+      }
+    }
+  )
+
+  unsubscribeInvitaciones = onSnapshot(
+    query(collection(db, 'invitaciones'), where('localId', '==', localId.value), orderBy('creadoEn', 'desc')),
+    s => { invitaciones.value = s.docs.map(d => ({ id: d.id, ...d.data() })) as Invitacion[] }
+  )
+
+  unsubscribeEmpleados = onSnapshot(
+    collection(db, 'usuarios'),
+    s => {
+      empleados.value = s.docs
+        .map(d => ({ id: d.id, ...d.data() } as Empleado))
+        .filter(u => u.localId === localId.value)
+    }
+  )
 })
 
+onUnmounted(() => {
+  unsubscribeMesas?.()
+  unsubscribeProductos?.()
+  unsubscribeCategorias?.()
+  unsubscribeZonas?.()
+  unsubscribeInvitaciones?.()
+  unsubscribeEmpleados?.()
+  unsubscribeFacturas?.()
+})
 
-// NUEVO: EMOJI PICKER - Funciones para guardar la selección
-const onSelectEmojiCategoria = (emoji: any) => {
-  nuevaCategoria.value.icono = emoji.i
-  mostrarSelectorCategoria.value = false
-}
-
-const onSelectEmojiProducto = (emoji: any) => {
-  nuevoProducto.value.icon = emoji.i
-  mostrarSelectorProducto.value = false
-}
-
-const onSelectEmojiZona = (emoji: any) => {
-  nuevaZona.value.icono = emoji.i
-  mostrarSelectorZona.value = false
-}
-
-// NUEVO: Lógica del mapa interactivo para el Admin
+// ── ACCIONES: MAPA ──
 const handleUpdatePosition = (id: string, x: number, y: number) => {
   posicionesMesas.value[id] = { x, y }
   localStorage.setItem(`posicionesMesas_${localId.value}`, JSON.stringify(posicionesMesas.value))
@@ -225,34 +275,16 @@ const handleSelectTable = (table: any) => {
   mesaSeleccionada.value = table.nr
 }
 
-const mesasFiltradasPorZona = computed(() => {
-  return mesas.value.filter(m => m.zona === zonaActiva.value || (!m.zona && zonas.value.length === 0))
-})
-
-const mesasParaMapa = computed(() => {
-  return mesasFiltradasPorZona.value.map(m => ({
-    id: m.id,
-    nr: m.numero,
-    status: m.estado === 'libre' ? 'available' : m.estado === 'ocupada' ? 'occupied' : 'preparing',
-    capacity: m.capacidad,
-    x: posicionesMesas.value[m.id]?.x,
-    y: posicionesMesas.value[m.id]?.y
-  }))
-})
-
-// ── MESAS ──────────────────────────────────────────────────────────────────
-
+// ── ACCIONES: MESAS ──
 const generarMesas = async () => {
   if (!localId.value) return
-  if (zonas.value.length === 0) return alert('⚠️ Por favor, crea al menos una "Zona" antes de añadir mesas.')
+  if (zonas.value.length === 0) return alert('⚠️ Crea una Zona antes de añadir mesas.')
   if (!zonaActiva.value) zonaActiva.value = zonas.value[0].nombre
   isLoading.value = true
   try {
-    // Filtrar por zona activa para que la numeración sea independiente por zona
     const mesasEnZona = mesas.value.filter(m => m.zona === zonaActiva.value)
     const ultimaNumero = mesasEnZona.length > 0
       ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
-      
     for (let i = 1; i <= cantidadMesas.value; i++) {
       await addDoc(collection(db, `locales/${localId.value}/mesas`), {
         numero: ultimaNumero + i,
@@ -268,42 +300,41 @@ const generarMesas = async () => {
 const resetearMesas = async () => {
   if (!localId.value || !confirm('¿Borrar TODAS las mesas? Esta acción no se puede deshacer.')) return
   try {
-    await Promise.all(mesas.value.map(m =>
-      deleteDoc(doc(db, `locales/${localId.value}/mesas`, m.id))
-    ))
+    await Promise.all(mesas.value.map(m => deleteDoc(doc(db, `locales/${localId.value}/mesas`, m.id))))
   } catch { alert('Error al borrar las mesas.') }
 }
 
-const eliminarMesa = async (id: string, numero: number) => {
-  if (!localId.value || !confirm(`¿Eliminar la Mesa ${numero}?`)) return
+// ── ACCIONES: ZONAS ──
+const guardarZona = async () => {
+  if (!localId.value || !nuevaZona.value.nombre.trim()) return alert('El nombre es obligatorio.')
+  const yaExiste = zonas.value.some(z => z.nombre.toLowerCase() === nuevaZona.value.nombre.toLowerCase())
+  if (yaExiste) return alert('Esa zona ya existe.')
   try {
-    await deleteDoc(doc(db, `locales/${localId.value}/mesas`, id))
-  } catch { alert('Error al eliminar la mesa.') }
+    await addDoc(collection(db, `locales/${localId.value}/zonas`), { ...nuevaZona.value })
+    nuevaZona.value = { nombre: '', icono: '🛋️' }
+  } catch { alert('Error al crear la zona.') }
 }
 
-const cambiarCapacidad = async (id: string, nuevaCap: number) => {
+const eliminarZona = async (id: string, nombre: string) => {
   if (!localId.value) return
-  await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { capacidad: nuevaCap })
+  const afectadas = mesas.value.filter(m => m.zona === nombre).length
+  const msg = afectadas > 0
+    ? `¿Eliminar "${nombre}"? Hay ${afectadas} mesas que perderán su zona.`
+    : `¿Eliminar la zona "${nombre}"?`
+  if (!confirm(msg)) return
+  try {
+    await deleteDoc(doc(db, `locales/${localId.value}/zonas`, id))
+    if (zonaActiva.value === nombre) zonaActiva.value = zonas.value.find(z => z.id !== id)?.nombre || ''
+  } catch { alert('Error al eliminar la zona.') }
 }
 
-const cambiarNombreMesa = async (id: string, nuevoNombre: string) => {
-  if (!localId.value) return
-  await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { nombre: nuevoNombre })
-}
-
-// ── CATEGORÍAS ─────────────────────────────────────────────────────────────
-
+// ── ACCIONES: CATEGORÍAS ──
 const guardarCategoria = async () => {
-  if (!localId.value) return
-  if (!nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
-  const yaExiste = categorias.value.some(
-    c => c.nombre.toLowerCase() === nuevaCategoria.value.nombre.toLowerCase()
-  )
+  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
+  const yaExiste = categorias.value.some(c => c.nombre.toLowerCase() === nuevaCategoria.value.nombre.toLowerCase())
   if (yaExiste) return alert('Esa categoría ya existe.')
   try {
-    await addDoc(collection(db, `locales/${localId.value}/categorias`), {
-      ...nuevaCategoria.value
-    })
+    await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...nuevaCategoria.value })
     nuevaCategoria.value = { nombre: '', icono: '🍽️' }
   } catch { alert('Error al crear la categoría.') }
 }
@@ -317,52 +348,18 @@ const eliminarCategoria = async (id: string, nombre: string) => {
   if (!confirm(msg)) return
   try {
     await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id))
-  } catch { alert('Error al eliminar la categoría.') }
+  } catch { alert('Error al eliminar.') }
 }
 
-// ── ZONAS ──────────────────────────────────────────────────────────────────
-
-const guardarZona = async () => {
-  if (!localId.value) return
-  if (!nuevaZona.value.nombre.trim()) return alert('El nombre de la zona es obligatorio.')
-  const yaExiste = zonas.value.some(z => z.nombre.toLowerCase() === nuevaZona.value.nombre.toLowerCase())
-  if (yaExiste) return alert('Esa zona ya existe.')
-  try {
-    await addDoc(collection(db, `locales/${localId.value}/zonas`), { ...nuevaZona.value })
-    nuevaZona.value = { nombre: '', icono: '🛋️' }
-  } catch { alert('Error al crear la zona.') }
-}
-
-const eliminarZona = async (id: string, nombre: string) => {
-  if (!localId.value) return
-  const afectadas = mesas.value.filter(m => m.zona === nombre).length
-  const msg = afectadas > 0
-    ? `¿Eliminar la zona "${nombre}"? Hay ${afectadas} mesas en esta zona que se ocultarán.`
-    : `¿Eliminar la zona "${nombre}"?`
-  if (!confirm(msg)) return
-  try {
-    await deleteDoc(doc(db, `locales/${localId.value}/zonas`, id))
-    if (zonaActiva.value === nombre) zonaActiva.value = zonas.value.find(z => z.id !== id)?.nombre || ''
-  } catch { alert('Error al eliminar la zona.') }
-}
-
-// ── PRODUCTOS ──────────────────────────────────────────────────────────────
-
+// ── ACCIONES: PRODUCTOS ──
 const guardarProducto = async () => {
   if (!localId.value) return
   if (!nuevoProducto.value.name.trim()) return alert('El nombre es obligatorio.')
   if (nuevoProducto.value.price <= 0) return alert('El precio debe ser mayor que 0.')
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
   try {
-    await addDoc(collection(db, `locales/${localId.value}/productos`), {
-      ...nuevoProducto.value
-    })
-    nuevoProducto.value = {
-      name: '',
-      price: 0,
-      category: categorias.value[0]?.nombre ?? '',
-      icon: '🍽️'
-    }
+    await addDoc(collection(db, `locales/${localId.value}/productos`), { ...nuevoProducto.value })
+    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️' }
   } catch { alert('Error al guardar el producto.') }
 }
 
@@ -370,22 +367,17 @@ const eliminarProducto = async (id: string, nombre: string) => {
   if (!localId.value || !confirm(`¿Eliminar "${nombre}"?`)) return
   try {
     await deleteDoc(doc(db, `locales/${localId.value}/productos`, id))
-  } catch { alert('Error al eliminar el producto.') }
+  } catch { alert('Error al eliminar.') }
 }
 
-// ── INVITACIONES ───────────────────────────────────────────────────────────
-
+// ── ACCIONES: INVITACIONES ──
 const generarCodigo = (): string => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  return Array.from(
-    { length: 8 },
-    () => chars[Math.floor(Math.random() * chars.length)]
-  ).join('')
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }
 
 const crearInvitacion = async () => {
-  if (!localId.value) return
-  if (!nuevaInvitacion.value.email.trim()) return alert('El email es obligatorio.')
+  if (!localId.value || !nuevaInvitacion.value.email.trim()) return alert('El email es obligatorio.')
   isCreandoInvitacion.value = true
   try {
     await addDoc(collection(db, 'invitaciones'), {
@@ -403,87 +395,244 @@ const crearInvitacion = async () => {
 }
 
 const eliminarInvitacion = async (id: string) => {
-  if (!confirm('¿Eliminar esta invitación? El código dejará de ser válido.')) return
-  try {
-    await deleteDoc(doc(db, 'invitaciones', id))
-  } catch { alert('Error al eliminar la invitación.') }
+  if (!confirm('¿Eliminar esta invitación?')) return
+  try { await deleteDoc(doc(db, 'invitaciones', id)) }
+  catch { alert('Error al eliminar.') }
 }
 
 const limpiarInvitacionesUsadas = async () => {
   const usadas = invitaciones.value.filter(i => i.estado === 'usada')
   if (usadas.length === 0) return alert('No hay códigos usados que limpiar.')
-  if (!confirm(`¿Borrar los ${usadas.length} códigos que ya han sido utilizados?`)) return
-
+  if (!confirm(`¿Borrar ${usadas.length} códigos ya utilizados?`)) return
   try {
     await Promise.all(usadas.map(inv => deleteDoc(doc(db, 'invitaciones', inv.id))))
-  } catch {
-    alert('Error al limpiar las invitaciones usadas.')
-  }
+  } catch { alert('Error al limpiar.') }
 }
 
-// ── EMPLEADOS ──────────────────────────────────────────────────────────────
-
+// ── ACCIONES: EMPLEADOS ──
 const toggleEstadoEmpleado = async (id: string, estadoActual: boolean) => {
   try {
-    await updateDoc(doc(db, 'usuarios', id), {
-      activo: !estadoActual
-    })
-  } catch {
-    alert('Error al actualizar el estado del empleado.')
-  }
+    await updateDoc(doc(db, 'usuarios', id), { activo: !estadoActual })
+  } catch { alert('Error al actualizar el estado.') }
 }
 
 const eliminarEmpleado = async (id: string, nombre: string) => {
-  if (!confirm(`¿Eliminar a "${nombre}"? Perderá el acceso al sistema inmediatamente.`)) return
-  try {
-    await deleteDoc(doc(db, 'usuarios', id))
-  } catch { alert('Error al eliminar el empleado.') }
+  if (!confirm(`¿Eliminar a "${nombre}"? Perderá el acceso inmediatamente.`)) return
+  try { await deleteDoc(doc(db, 'usuarios', id)) }
+  catch { alert('Error al eliminar.') }
 }
+
+// ── ACCIONES: FINANZAS ──
+const abrirDetalleFactura = (factura: Factura) => {
+  facturaSeleccionada.value = factura
+  mostrarModalDetalleFactura.value = true
+}
+
+const abrirEditarFactura = (factura: Factura) => {
+  facturaEditando.value = JSON.parse(JSON.stringify(factura))
+  nuevoItemSeleccionado.value = ''
+  mostrarModalEditarFactura.value = true
+}
+
+const recalcularTotalFactura = () => {
+  if (!facturaEditando.value.items) return
+  let total = 0
+  facturaEditando.value.items.forEach((item: any) => {
+    item.subtotal = item.cantidad * item.precio
+    total += item.subtotal
+  })
+  facturaEditando.value.total = parseFloat(total.toFixed(2))
+}
+
+const quitarItemTicket = (index: number) => {
+  facturaEditando.value.items?.splice(index, 1)
+  recalcularTotalFactura()
+}
+
+const agregarItemTicket = () => {
+  if (!nuevoItemSeleccionado.value) return
+  const prod = productos.value.find(p => p.id === nuevoItemSeleccionado.value)
+  if (prod && facturaEditando.value.items) {
+    facturaEditando.value.items.push({
+      nombre: prod.name, cantidad: 1, precio: prod.price, subtotal: prod.price
+    })
+    recalcularTotalFactura()
+    nuevoItemSeleccionado.value = ''
+  }
+}
+
+const guardarEdicionFactura = async () => {
+  if (!localId.value || !facturaEditando.value.id) return
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/facturas`, facturaEditando.value.id), {
+      total: facturaEditando.value.total,
+      metodoPago: facturaEditando.value.metodoPago,
+      items: facturaEditando.value.items
+    })
+    mostrarModalEditarFactura.value = false
+  } catch { alert('Error al actualizar el ticket.') }
+}
+
+const eliminarFactura = async (id: string) => {
+  if (!confirm('¿Eliminar esta factura?')) return
+  try { await deleteDoc(doc(db, `locales/${localId.value}/facturas`, id)) }
+  catch { alert('Error al eliminar.') }
+}
+
+// ── EMOJI PICKER ──
+const onSelectEmojiCategoria = (e: any) => { nuevaCategoria.value.icono = e.i; mostrarSelectorCategoria.value = false }
+const onSelectEmojiProducto = (e: any) => { nuevoProducto.value.icon = e.i; mostrarSelectorProducto.value = false }
+const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSelectorZona.value = false }
 </script>
 
 <template>
   <div class="admin-layout">
 
-    <!-- SIDEBAR -->
+    <!-- ── SIDEBAR ── -->
     <aside class="sidebar">
       <div class="sidebar-brand">
         <h2>EasyOrder</h2>
         <span class="admin-tag">Admin</span>
       </div>
-
       <nav class="sidebar-nav">
-        <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">
-          🪑 Mesas
-        </button>
-        <button :class="{ active: currentTab === 'zonas' }" @click="currentTab = 'zonas'">
-          🔲 Zonas
-        </button>
-        <button :class="{ active: currentTab === 'categorias' }" @click="currentTab = 'categorias'">
-          🗂️ Categorías
-        </button>
-        <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">
-          🍔 Menú
-        </button>
-        <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">
-          👥 Empleados
-        </button>
+        <button :class="{ active: currentTab === 'finanzas' }" @click="currentTab = 'finanzas'">💰 Finanzas</button>
+        <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">🪑 Sala</button>
+        <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
+        <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">👥 Empleados</button>
       </nav>
-
       <div class="sidebar-footer">
         <div class="local-info">🏢 {{ localId }}</div>
         <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
       </div>
     </aside>
 
-    <!-- CONTENIDO PRINCIPAL -->
+    <!-- ── CONTENIDO PRINCIPAL ── -->
     <main class="content">
 
-      <!-- ── TAB: MESAS ── -->
+      <!-- ══ TAB: FINANZAS ══ -->
+      <div v-if="currentTab === 'finanzas'">
+        <div class="page-header">
+          <div>
+            <h1>Cierre de Caja</h1>
+            <p class="page-subtitle">Facturación del día</p>
+          </div>
+          <div class="controls">
+            <input type="date" v-model="filtroFecha" class="input-date">
+          </div>
+        </div>
+
+        <!-- KPIs -->
+        <div class="kpi-grid">
+          <div class="kpi-card highlight">
+            <span class="kpi-title">Total Recaudado</span>
+            <span class="kpi-value">{{ totalVentas.toFixed(2) }} €</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">💵 Efectivo</span>
+            <span class="kpi-value">{{ totalEfectivo.toFixed(2) }} €</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">💳 Tarjeta</span>
+            <span class="kpi-value">{{ totalTarjeta.toFixed(2) }} €</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">📊 Ticket Medio</span>
+            <span class="kpi-value">{{ ticketMedio.toFixed(2) }} €</span>
+          </div>
+        </div>
+
+        <!-- Sub-tabs finanzas -->
+        <div class="tabs-zone-admin">
+          <button :class="{ active: finanzasSubTab === 'tickets' }" @click="finanzasSubTab = 'tickets'">
+            🧾 Registro de Tickets
+          </button>
+          <button :class="{ active: finanzasSubTab === 'rendimiento' }" @click="finanzasSubTab = 'rendimiento'">
+            👥 Rendimiento Empleados
+          </button>
+        </div>
+
+        <!-- Tickets -->
+        <div v-if="finanzasSubTab === 'tickets'" class="card-container">
+          <div class="finanzas-filtros">
+            <div class="form-group-inline">
+              <label>Camarero:</label>
+              <select v-model="filtroFEmpleado" class="input-select">
+                <option value="todos">Todos</option>
+                <option v-for="e in empleadosConVentasDia" :key="e" :value="e">{{ e }}</option>
+              </select>
+            </div>
+            <div class="form-group-inline">
+              <label>Pago:</label>
+              <select v-model="filtroFPago" class="input-select">
+                <option value="todos">Todos</option>
+                <option value="efectivo">Efectivo</option>
+                <option value="tarjeta">Tarjeta</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="facturasFiltradas.length === 0" class="empty-state-box">
+            No hay tickets registrados para este día.
+          </div>
+
+          <div class="tickets-grid">
+            <div
+              v-for="f in facturasFiltradas"
+              :key="f.id"
+              class="factura-card"
+              @click="abrirDetalleFactura(f)"
+            >
+              <div class="f-header">
+                <span class="f-mesa">Mesa {{ f.mesaNumero }} <small>({{ f.zona }})</small></span>
+                <span class="f-metodo" :class="f.metodoPago">{{ f.metodoPago }}</span>
+              </div>
+              <div class="f-body">
+                <span class="f-empleado">{{ f.usuarioNombre }}</span>
+                <span class="f-hora">
+                  {{ f.fecha ? new Date(f.fecha.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--' }}
+                </span>
+              </div>
+              <div class="f-footer">
+                <span class="f-total">{{ f.total.toFixed(2) }} €</span>
+                <div class="ticket-actions">
+                  <button class="btn-icon btn-edit" @click.stop="abrirEditarFactura(f)" title="Editar">✏️</button>
+                  <button class="btn-icon btn-del"  @click.stop="eliminarFactura(f.id)"  title="Eliminar">🗑️</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rendimiento empleados -->
+        <div v-if="finanzasSubTab === 'rendimiento'" class="card-container">
+          <div v-if="ventasPorEmpleado.length === 0" class="empty-state-box">
+            No hay datos de ventas para este día.
+          </div>
+          <div v-else class="rendimiento-lista">
+            <div v-for="(emp, i) in ventasPorEmpleado" :key="emp.nombre" class="rendimiento-row">
+              <div class="rank-badge">{{ i + 1 }}</div>
+              <div class="empleado-info">
+                <span class="empleado-nombre">{{ emp.nombre }}</span>
+                <span class="empleado-pedidos">{{ emp.pedidos }} pedido{{ emp.pedidos !== 1 ? 's' : '' }}</span>
+              </div>
+              <div class="barra-progreso-wrapper">
+                <div
+                  class="barra-progreso"
+                  :style="{ width: `${(emp.total / totalVentas) * 100}%` }"
+                ></div>
+              </div>
+              <span class="rendimiento-total">{{ emp.total.toFixed(2) }} €</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ TAB: SALA / MESAS ══ -->
       <div v-if="currentTab === 'mesas'">
         <div class="page-header">
           <div>
-            <h1>Gestión de Mesas</h1>
-            <p class="page-subtitle">{{ mesas.length }} mesas en total</p>
+            <h1>Gestión de Sala</h1>
+            <p class="page-subtitle">{{ mesas.length }} mesas · Diseña la distribución de tu local</p>
           </div>
           <div class="controls">
             <input type="number" v-model="cantidadMesas" min="1" max="50" class="input-num">
@@ -494,176 +643,67 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
           </div>
         </div>
 
-        <div class="tabs-zone-admin" v-if="zonas.length > 0">
-          <button v-for="z in zonas" :key="z.id" :class="{ active: zonaActiva === z.nombre }" @click="zonaActiva = z.nombre; mesaSeleccionada = null">
+        <div class="tabs-zone-admin">
+          <button
+            v-for="z in zonas"
+            :key="z.id"
+            :class="{ active: zonaActiva === z.nombre }"
+            @click="zonaActiva = z.nombre; mesaSeleccionada = null"
+          >
             {{ z.icono }} {{ z.nombre }}
           </button>
-        </div>
-        <div v-else class="empty-productos" style="padding: 10px 0;">⚠️ Primero debes crear una Zona en la pestaña "Zonas" para ver el mapa.</div>
-
-        <div class="mesas-admin-layout">
-          <!-- MAPA INTERACTIVO -->
-          <div class="mapa-admin-container" v-if="zonas.length > 0">
-            <PosFloorMap
-              :zona="zonaActiva.toLowerCase()"
-              :tables="mesasParaMapa"
-              :mesa-seleccionada="mesaSeleccionada"
-              :is-editable="true"
-              @select-table="(table) => handleSelectTable(table)"
-              @update-position="(id, x, y) => handleUpdatePosition(id, x, y)"
-            />
-          </div>
-
-          <!-- LISTA DE MESAS (SIDEBAR DERECHO) -->
-          <div class="mesas-lista-admin">
-            <div v-for="mesa in mesasFiltradasPorZona" :key="mesa.id" class="mesa-card" :class="{ 'selected-card': mesaSeleccionada === mesa.numero }" @click="mesaSeleccionada = mesa.numero">
-              <div class="mesa-card-header">
-                <input type="text" class="mesa-nombre-input" :value="mesa.nombre || `Mesa ${mesa.numero}`"
-                  @change="cambiarNombreMesa(mesa.id, ($event.target as HTMLInputElement).value)">
-                <div class="mesa-header-actions">
-                  <span class="mesa-estado" :class="mesa.estado">{{ mesa.estado }}</span>
-                  <button class="btn-eliminar-mesa" @click.stop="eliminarMesa(mesa.id, mesa.numero)">✕</button>
-                </div>
-              </div>
-              <div class="mesa-capacidad">
-                <label>Capacidad</label>
-                <input type="number" :value="mesa.capacidad" min="1" max="20"
-                  @change="cambiarCapacidad(mesa.id, +($event.target as HTMLInputElement).value)">
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <!-- ── TAB: ZONAS ── -->
-      <div v-if="currentTab === 'zonas'">
-        <div class="page-header">
-          <div>
-            <h1>Gestión de Zonas</h1>
-            <p class="page-subtitle">{{ zonas.length }} zonas creadas (Salones, Terrazas, Barras...)</p>
-          </div>
+          <button class="btn-gestionar-zonas" @click="mostrarModalZonas = true">
+            ⚙️ Gestionar Zonas
+          </button>
         </div>
 
-        <div class="productos-layout">
-          <div class="product-form-card">
-            <h3>Nueva Zona</h3>
-            <div class="product-form">
-              <div class="form-group">
-                <label>Nombre de la zona</label>
-                <input v-model="nuevaZona.nombre" placeholder="Ej: Terraza Principal">
-              </div>
-              <div class="form-group">
-                <label>Icono (Emoji)</label>
-                <div class="emoji-selector-container">
-                  <button type="button" class="btn-emoji" @click="mostrarSelectorZona = !mostrarSelectorZona">
-                    <span class="emoji-preview">{{ nuevaZona.icono }}</span> Cambiar Icono
-                  </button>
-                  <div v-if="mostrarSelectorZona" class="picker-popup">
-                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiZona" />
-                  </div>
-                </div>
-              </div>
-              <button @click="guardarZona" class="btn-primary btn-full">+ Crear Zona</button>
-            </div>
-          </div>
+        <FloorEditor
+          v-if="zonas.length > 0 && localId"
+          :local-id="localId"
+          :zona-id="zonas.find(z => z.nombre === zonaActiva)?.id ?? ''"
+          :zona-nombre="zonaActiva"
+          :mesas="mesasParaMapa"
+          :mesa-seleccionada="mesaSeleccionada"
+          @select-table="handleSelectTable"
+          @update-mesa-position="handleUpdatePosition"
+        />
 
-          <div class="productos-lista">
-            <h3>Zonas actuales</h3>
-            <div v-if="zonas.length === 0" class="empty-productos">No hay zonas creadas todavía.</div>
-            <div v-for="z in zonas" :key="z.id" class="producto-row">
-              <span class="producto-icon">{{ z.icono }}</span>
-              <div class="producto-info">
-                <span class="producto-name">{{ z.nombre }}</span>
-                <span class="producto-cat">{{ mesas.filter(m => m.zona === z.nombre).length }} mesas en esta zona</span>
-              </div>
-              <button class="btn-eliminar" @click="eliminarZona(z.id, z.nombre)">✕</button>
-            </div>
-          </div>
+        <div v-else class="empty-state-box" style="margin-top: 24px;">
+          ⚠️ Crea al menos una zona en "Gestionar Zonas" para diseñar el local.
         </div>
       </div>
 
-      <!-- ── TAB: CATEGORÍAS ── -->
-      <div v-if="currentTab === 'categorias'">
-        <div class="page-header">
-          <div>
-            <h1>Gestión de Categorías</h1>
-            <p class="page-subtitle">{{ categorias.length }} categorías activas</p>
-          </div>
-        </div>
-
-        <div class="productos-layout">
-          <div class="product-form-card">
-            <h3>Nueva categoría</h3>
-            <div class="product-form">
-              <div class="form-group">
-                <label>Nombre</label>
-                <input v-model="nuevaCategoria.nombre" placeholder="Ej: Entrantes">
-              </div>
-
-              <!-- NUEVO: EMOJI PICKER EN CATEGORÍAS -->
-              <div class="form-group">
-                <label>Icono (Emoji)</label>
-                <div class="emoji-selector-container">
-                  <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
-                    <span class="emoji-preview">{{ nuevaCategoria.icono }}</span> Cambiar Icono
-                  </button>
-                  <div v-if="mostrarSelectorCategoria" class="picker-popup">
-                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
-                  </div>
-                </div>
-              </div>
-              <!-- FIN EMOJI PICKER -->
-
-              <button @click="guardarCategoria" class="btn-primary btn-full">
-                + Añadir Categoría
-              </button>
-            </div>
-          </div>
-
-          <div class="productos-lista">
-            <h3>Categorías actuales</h3>
-            <div v-if="categorias.length === 0" class="empty-productos">
-              No hay categorías todavía.
-            </div>
-            <div v-for="cat in categorias" :key="cat.id" class="producto-row">
-              <span class="producto-icon">{{ cat.icono }}</span>
-              <div class="producto-info">
-                <span class="producto-name">{{ cat.nombre }}</span>
-                <span class="producto-cat">
-                  {{productos.filter(p => p.category === cat.nombre).length}} productos
-                </span>
-              </div>
-              <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── TAB: PRODUCTOS ── -->
+      <!-- ══ TAB: MENÚ ══ -->
       <div v-if="currentTab === 'productos'">
         <div class="page-header">
           <div>
             <h1>Gestión del Menú</h1>
             <p class="page-subtitle">{{ productos.length }} productos en la carta</p>
           </div>
+          <div class="controls">
+            <button class="btn-gestionar-zonas" @click="mostrarModalCategorias = true">
+              ⚙️ Gestionar Categorías
+            </button>
+          </div>
         </div>
 
-        <div class="productos-layout">
-          <div class="product-form-card">
-            <h3>Añadir nuevo plato</h3>
-            <div v-if="categorias.length === 0" class="empty-productos" style="padding: 16px 0">
-              ⚠️ Primero crea una categoría en la pestaña "Categorías".
+        <div class="dos-columnas">
+          <!-- Formulario nuevo producto -->
+          <div class="form-card">
+            <h3 class="form-card-title">Nuevo plato</h3>
+            <div v-if="categorias.length === 0" class="empty-state-box">
+              ⚠️ Crea primero una categoría en "Gestionar Categorías".
             </div>
-            <div v-else class="product-form">
-              <div class="form-group">
+            <div v-else class="form-fields">
+              <div class="field-group">
                 <label>Nombre del plato</label>
                 <input v-model="nuevoProducto.name" placeholder="Ej: Burger Clásica">
               </div>
-              <div class="form-group">
+              <div class="field-group">
                 <label>Precio (€)</label>
                 <input type="number" v-model="nuevoProducto.price" step="0.01" min="0">
               </div>
-              <div class="form-group">
+              <div class="field-group">
                 <label>Categoría</label>
                 <select v-model="nuevoProducto.category">
                   <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">
@@ -671,46 +711,38 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
                   </option>
                 </select>
               </div>
-
-              <!-- NUEVO: EMOJI PICKER EN PRODUCTOS -->
-              <div class="form-group">
-                <label>Icono (Emoji)</label>
+              <div class="field-group">
+                <label>Icono</label>
                 <div class="emoji-selector-container">
                   <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
-                    <span class="emoji-preview">{{ nuevoProducto.icon }}</span> Cambiar Icono
+                    <span class="emoji-preview">{{ nuevoProducto.icon }}</span>
+                    <span>Cambiar icono</span>
                   </button>
                   <div v-if="mostrarSelectorProducto" class="picker-popup">
                     <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
                   </div>
                 </div>
               </div>
-              <!-- FIN EMOJI PICKER -->
-
-              <button @click="guardarProducto" class="btn-primary btn-full">
-                + Guardar en el Menú
-              </button>
+              <button @click="guardarProducto" class="btn-primary btn-full">+ Guardar en el Menú</button>
             </div>
           </div>
 
-          <div class="productos-lista">
-            <h3>Carta actual</h3>
-            <div v-if="productos.length === 0" class="empty-productos">
-              No hay productos todavía.
-            </div>
+          <!-- Carta actual agrupada -->
+          <div class="lista-card">
+            <h3 class="form-card-title">Carta actual</h3>
+            <div v-if="productos.length === 0" class="empty-state-box">No hay productos todavía.</div>
             <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
-              <div v-if="platos.length > 0" class="categoria-header">
-                <span class="categoria-icono">
-                  {{categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️'}}
-                </span>
+              <div class="categoria-header">
+                <span class="categoria-icono">{{ categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️' }}</span>
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
-              <div v-for="p in platos" :key="p.id" class="producto-row">
-                <span class="producto-icon">{{ p.icon }}</span>
-                <div class="producto-info">
-                  <span class="producto-name">{{ p.name }}</span>
+              <div v-for="p in platos" :key="p.id" class="item-row">
+                <span class="item-icon">{{ p.icon }}</span>
+                <div class="item-info">
+                  <span class="item-name">{{ p.name }}</span>
                 </div>
-                <span class="producto-price">{{ Number(p.price).toFixed(2) }}€</span>
+                <span class="item-price">{{ Number(p.price).toFixed(2) }}€</span>
                 <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
               </div>
             </div>
@@ -718,7 +750,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
         </div>
       </div>
 
-      <!-- ── TAB: EMPLEADOS ── -->
+      <!-- ══ TAB: EMPLEADOS ══ -->
       <div v-if="currentTab === 'usuarios'">
         <div class="page-header">
           <div>
@@ -727,23 +759,21 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
           </div>
         </div>
 
-        <div class="empleados-layout">
+        <div class="dos-columnas">
+          <!-- Columna izquierda: invitaciones -->
+          <div class="columna-izq">
 
-          <!-- Columna izquierda: formulario + códigos generados -->
-          <div class="empleados-left">
-
-            <div class="product-form-card">
-              <h3>🔑 Nueva invitación</h3>
+            <div class="form-card">
+              <h3 class="form-card-title">🔑 Nueva invitación</h3>
               <p class="form-hint">
-                Se generará un código único que el empleado usará en
-                <strong>/register</strong> para activar su cuenta.
+                El empleado usará el código en <strong>/register</strong> para activar su cuenta.
               </p>
-              <div class="product-form" style="margin-top: 18px;">
-                <div class="form-group">
+              <div class="form-fields" style="margin-top: 16px;">
+                <div class="field-group">
                   <label>Email del empleado</label>
                   <input type="email" v-model="nuevaInvitacion.email" placeholder="empleado@restaurante.com">
                 </div>
-                <div class="form-group">
+                <div class="field-group">
                   <label>Rol asignado</label>
                   <select v-model="nuevaInvitacion.rol">
                     <option value="camarero">🙋 Camarero</option>
@@ -757,93 +787,272 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
               </div>
             </div>
 
-            <!-- Códigos generados -->
-            <div class="product-form-card" style="margin-top: 20px;">
-              <div class="section-header-flex">
-                <h3 style="margin-bottom: 0;">Códigos generados</h3>
-                <button class="btn-icon-text" @click="limpiarInvitacionesUsadas"
-                  title="Borra todos los códigos que ya han sido usados">
-                  🧹 Limpiar usados
-                </button>
+            <div class="form-card" style="margin-top: 20px;">
+              <div class="card-header-row">
+                <h3 class="form-card-title" style="margin-bottom: 0;">Códigos generados</h3>
+                <button class="btn-text-danger" @click="limpiarInvitacionesUsadas">🧹 Limpiar usados</button>
               </div>
-
-              <div v-if="invitaciones.length === 0" class="empty-productos" style="padding: 20px 0">
+              <div v-if="invitaciones.length === 0" class="empty-state-box" style="margin-top: 12px;">
                 No hay invitaciones todavía.
               </div>
-              <div v-for="inv in invitaciones" :key="inv.id" class="invitacion-row">
-                <div class="producto-info min-width-0">
-                  <span class="producto-name truncate">{{ inv.email }}</span>
-                  <span class="producto-cat">{{ inv.rol }}</span>
+              <div v-for="inv in invitaciones" :key="inv.id" class="item-row" style="margin-top: 8px;">
+                <div class="item-info">
+                  <span class="item-name" style="font-size: 0.85rem;">{{ inv.email }}</span>
+                  <span class="item-sub">{{ inv.rol }}</span>
                 </div>
                 <span class="codigo-badge" :class="inv.estado">
-                  {{ inv.estado === 'pendiente' ? inv.codigo : '✓ Usada' }}
+                  {{ inv.estado === 'pendiente' ? inv.codigo : '✓ Usado' }}
                 </span>
-                <button v-if="inv.estado === 'pendiente'" class="btn-eliminar"
-                  @click="eliminarInvitacion(inv.id)">✕</button>
+                <button v-if="inv.estado === 'pendiente'" class="btn-eliminar" @click="eliminarInvitacion(inv.id)">✕</button>
               </div>
             </div>
 
           </div>
 
-          <!-- Columna derecha: lista de empleados registrados -->
-          <div class="productos-lista">
-            <h3>👥 Equipo registrado</h3>
+          <!-- Columna derecha: lista de empleados -->
+          <div class="lista-card">
+            <h3 class="form-card-title">👥 Equipo registrado</h3>
 
-            <div class="filtros-rol" v-if="empleados.length > 0">
-              <button :class="{ active: filtroRol === 'todos' }" @click="filtroRol = 'todos'">Todos</button>
-              <button :class="{ active: filtroRol === 'admin' }" @click="filtroRol = 'admin'">Admins</button>
+            <div class="filtros-rol">
+              <button :class="{ active: filtroRol === 'todos' }"    @click="filtroRol = 'todos'">Todos</button>
+              <button :class="{ active: filtroRol === 'admin' }"    @click="filtroRol = 'admin'">Admins</button>
               <button :class="{ active: filtroRol === 'camarero' }" @click="filtroRol = 'camarero'">Camareros</button>
               <button :class="{ active: filtroRol === 'cocinero' }" @click="filtroRol = 'cocinero'">Cocineros</button>
             </div>
 
-            <div v-if="empleadosFiltrados.length === 0" class="empty-productos">
-              No hay empleados que coincidan con este filtro.
+            <div v-if="empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol).length === 0" class="empty-state-box">
+              No hay empleados con este filtro.
             </div>
 
-            <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
-              <div class="empleado-avatar">
-                {{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}
-              </div>
-              <div class="producto-info min-width-0">
-                <span class="producto-name truncate">{{ emp.nombre }}</span>
-                <span class="producto-cat truncate">{{ emp.email }}</span>
+            <div
+              v-for="emp in empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol)"
+              :key="emp.id"
+              class="empleado-row"
+            >
+              <div class="empleado-avatar">{{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}</div>
+              <div class="item-info">
+                <span class="item-name">{{ emp.nombre }}</span>
+                <span class="item-sub">{{ emp.email }}</span>
               </div>
               <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
-
-              <button class="activo-toggle" :class="emp.activo ? 'activo' : 'inactivo'"
-                @click="toggleEstadoEmpleado(emp.id, emp.activo)">
+              <button
+                class="activo-toggle"
+                :class="emp.activo ? 'activo' : 'inactivo'"
+                @click="toggleEstadoEmpleado(emp.id, emp.activo)"
+              >
                 {{ emp.activo ? '● Activo' : '○ Inactivo' }}
               </button>
-
               <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
             </div>
           </div>
-
         </div>
       </div>
 
     </main>
+
+    <!-- ══ MODAL: DETALLE FACTURA ══ -->
+    <transition name="fade">
+      <div v-if="mostrarModalDetalleFactura && facturaSeleccionada" class="modal-backdrop" @click.self="mostrarModalDetalleFactura = false">
+        <div class="modal-ticket">
+          <div class="ticket-paper-admin">
+            <div class="ticket-top">
+              <h2>EasyOrder</h2>
+              <p class="ticket-sub">COPIA DE TICKET</p>
+              <p class="ticket-info">Mesa {{ facturaSeleccionada.mesaNumero }} ({{ facturaSeleccionada.zona }})</p>
+              <p class="ticket-info muted">{{ new Date(facturaSeleccionada.fecha.seconds * 1000).toLocaleString() }}</p>
+              <p class="ticket-info muted">Camarero: {{ facturaSeleccionada.usuarioNombre }}</p>
+            </div>
+            <div class="ticket-divider"></div>
+            <div class="ticket-items-admin">
+              <div v-for="(item, idx) in facturaSeleccionada.items" :key="idx" class="t-item-admin">
+                <span class="t-qty-admin">{{ item.cantidad }}x</span>
+                <span class="t-name-admin">{{ item.nombre }}</span>
+                <span class="t-price-admin">{{ (item.precio * item.cantidad).toFixed(2) }}€</span>
+              </div>
+            </div>
+            <div class="ticket-divider"></div>
+            <div class="ticket-total-row">
+              <span>TOTAL</span>
+              <span>{{ facturaSeleccionada.total.toFixed(2) }}€</span>
+            </div>
+            <p class="ticket-info muted" style="text-align:right; margin-top: 6px;">
+              Método: {{ facturaSeleccionada.metodoPago }}
+            </p>
+          </div>
+          <button class="btn-primary btn-full" style="border-radius: 0 0 14px 14px;" @click="mostrarModalDetalleFactura = false">
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ══ MODAL: EDITAR FACTURA ══ -->
+    <transition name="fade">
+      <div v-if="mostrarModalEditarFactura" class="modal-backdrop" @click.self="mostrarModalEditarFactura = false">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>Editar Ticket</h2>
+            <button class="btn-close" @click="mostrarModalEditarFactura = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-fields">
+              <label class="field-label">Productos:</label>
+              <div class="edit-items-container">
+                <div class="edit-items-list">
+                  <div v-for="(item, idx) in facturaEditando.items" :key="idx" class="edit-item-row">
+                    <span class="edit-item-name">{{ item.nombre }}</span>
+                    <div class="edit-item-controls">
+                      <input type="number" v-model.number="item.cantidad" min="1" @input="recalcularTotalFactura" class="edit-input-sm">
+                      <span class="edit-sep">×</span>
+                      <input type="number" v-model.number="item.precio" step="0.01" @input="recalcularTotalFactura" class="edit-input-sm">
+                      <button class="btn-eliminar-sm" @click="quitarItemTicket(idx)">✕</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="add-item-row">
+                  <select v-model="nuevoItemSeleccionado" class="input-select" style="flex:1">
+                    <option value="">Añadir producto...</option>
+                    <option v-for="p in productos" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
+                  <button class="btn-primary" @click="agregarItemTicket" style="padding: 8px 16px;">OK</button>
+                </div>
+              </div>
+
+              <div class="two-cols-fields">
+                <div class="field-group">
+                  <label>Total (€)</label>
+                  <input type="number" v-model.number="facturaEditando.total" step="0.01">
+                </div>
+                <div class="field-group">
+                  <label>Método de pago</label>
+                  <select v-model="facturaEditando.metodoPago">
+                    <option value="efectivo">Efectivo</option>
+                    <option value="tarjeta">Tarjeta</option>
+                  </select>
+                </div>
+              </div>
+
+              <button @click="guardarEdicionFactura" class="btn-primary btn-full">Guardar Cambios</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ══ MODAL: ZONAS ══ -->
+    <transition name="fade">
+      <div v-if="mostrarModalZonas" class="modal-backdrop" @click.self="mostrarModalZonas = false">
+        <div class="modal-content modal-sm">
+          <div class="modal-header">
+            <h2>Gestionar Zonas</h2>
+            <button class="btn-close" @click="mostrarModalZonas = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="dos-columnas">
+              <div class="form-card">
+                <h3 class="form-card-title">Nueva zona</h3>
+                <div class="form-fields">
+                  <div class="field-group">
+                    <label>Nombre</label>
+                    <input v-model="nuevaZona.nombre" placeholder="Ej: Terraza">
+                  </div>
+                  <div class="field-group">
+                    <label>Icono</label>
+                    <div class="emoji-selector-container">
+                      <button type="button" class="btn-emoji" @click="mostrarSelectorZona = !mostrarSelectorZona">
+                        <span class="emoji-preview">{{ nuevaZona.icono }}</span>
+                        <span>Cambiar</span>
+                      </button>
+                      <div v-if="mostrarSelectorZona" class="picker-popup">
+                        <EmojiPicker :native="true" theme="light" @select="onSelectEmojiZona" />
+                      </div>
+                    </div>
+                  </div>
+                  <button @click="guardarZona" class="btn-primary btn-full">+ Crear Zona</button>
+                </div>
+              </div>
+              <div class="lista-card">
+                <h3 class="form-card-title">Zonas actuales</h3>
+                <div v-if="zonas.length === 0" class="empty-state-box">No hay zonas todavía.</div>
+                <div v-for="z in zonas" :key="z.id" class="item-row">
+                  <span class="item-icon">{{ z.icono }}</span>
+                  <div class="item-info">
+                    <span class="item-name">{{ z.nombre }}</span>
+                    <span class="item-sub">{{ mesas.filter(m => m.zona === z.nombre).length }} mesas</span>
+                  </div>
+                  <button class="btn-eliminar" @click="eliminarZona(z.id, z.nombre)">✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ══ MODAL: CATEGORÍAS ══ -->
+    <transition name="fade">
+      <div v-if="mostrarModalCategorias" class="modal-backdrop" @click.self="mostrarModalCategorias = false">
+        <div class="modal-content modal-sm">
+          <div class="modal-header">
+            <h2>Gestionar Categorías</h2>
+            <button class="btn-close" @click="mostrarModalCategorias = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="dos-columnas">
+              <div class="form-card">
+                <h3 class="form-card-title">Nueva categoría</h3>
+                <div class="form-fields">
+                  <div class="field-group">
+                    <label>Nombre</label>
+                    <input v-model="nuevaCategoria.nombre" placeholder="Ej: Entrantes">
+                  </div>
+                  <div class="field-group">
+                    <label>Icono</label>
+                    <div class="emoji-selector-container">
+                      <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
+                        <span class="emoji-preview">{{ nuevaCategoria.icono }}</span>
+                        <span>Cambiar</span>
+                      </button>
+                      <div v-if="mostrarSelectorCategoria" class="picker-popup">
+                        <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                      </div>
+                    </div>
+                  </div>
+                  <button @click="guardarCategoria" class="btn-primary btn-full">+ Añadir Categoría</button>
+                </div>
+              </div>
+              <div class="lista-card">
+                <h3 class="form-card-title">Categorías actuales</h3>
+                <div v-if="categorias.length === 0" class="empty-state-box">No hay categorías todavía.</div>
+                <div v-for="cat in categorias" :key="cat.id" class="item-row">
+                  <span class="item-icon">{{ cat.icono }}</span>
+                  <div class="item-info">
+                    <span class="item-name">{{ cat.nombre }}</span>
+                    <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
+                  </div>
+                  <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>
 
 <style scoped>
 @import 'vue3-emoji-picker/css';
-* {
-  box-sizing: border-box;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  margin: 0;
-  padding: 0;
-}
 
-.admin-layout {
-  display: flex;
-  min-height: 100vh;
-  background: #f3f4f6;
-}
+* { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; }
+
+/* ── LAYOUT BASE ── */
+.admin-layout { display: flex; min-height: 100vh; background: #f3f4f6; }
 
 /* ── SIDEBAR ── */
 .sidebar {
-  width: 240px;
+  width: 220px;
   background: #1e293b;
   color: white;
   padding: 24px 16px;
@@ -862,11 +1071,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   margin-bottom: 8px;
 }
 
-.sidebar-brand h2 {
-  font-size: 1.15rem;
-  font-weight: 800;
-  color: white;
-}
+.sidebar-brand h2 { font-size: 1.15rem; font-weight: 800; color: white; }
 
 .admin-tag {
   background: #4f46e5;
@@ -877,12 +1082,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   border-radius: 20px;
 }
 
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 
 .sidebar-nav button {
   padding: 12px 16px;
@@ -894,18 +1094,11 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   font-size: 0.95rem;
   border-radius: 8px;
   transition: all 0.2s;
+  width: 100%;
 }
 
-.sidebar-nav button:hover {
-  background: #334155;
-  color: white;
-}
-
-.sidebar-nav button.active {
-  background: #4f46e5;
-  color: white;
-  font-weight: 600;
-}
+.sidebar-nav button:hover { background: #334155; color: white; }
+.sidebar-nav button.active { background: #4f46e5; color: white; font-weight: 600; }
 
 .sidebar-footer {
   display: flex;
@@ -925,7 +1118,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 .btn-logout {
-  padding: 12px 16px;
+  padding: 10px 16px;
   background: transparent;
   border: 1px solid #334155;
   color: #94a3b8;
@@ -934,20 +1127,13 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   font-size: 0.9rem;
   border-radius: 8px;
   transition: all 0.2s;
+  width: 100%;
 }
 
-.btn-logout:hover {
-  background: #ef4444;
-  border-color: #ef4444;
-  color: white;
-}
+.btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
 
 /* ── CONTENT ── */
-.content {
-  flex: 1;
-  padding: 36px 40px;
-  overflow-y: auto;
-}
+.content { flex: 1; padding: 36px 40px; overflow-y: auto; min-width: 0; }
 
 .page-header {
   display: flex;
@@ -958,35 +1144,12 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   gap: 16px;
 }
 
-.page-header h1 {
-  font-size: 1.6rem;
-  font-weight: 700;
-  color: #0f172a;
-}
+.page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
+.page-subtitle { color: #64748b; font-size: 0.9rem; margin-top: 4px; }
 
-.page-subtitle {
-  color: #64748b;
-  font-size: 0.9rem;
-  margin-top: 4px;
-}
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
-.controls {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.input-num {
-  width: 80px;
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  text-align: center;
-}
-
-/* ── BOTONES ── */
+/* ── BOTONES GLOBALES ── */
 .btn-primary {
   background: #4f46e5;
   color: white;
@@ -999,19 +1162,9 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: background 0.2s;
 }
 
-.btn-primary:hover:not(:disabled) {
-  background: #4338ca;
-}
-
-.btn-primary:disabled {
-  background: #a5b4fc;
-  cursor: not-allowed;
-}
-
-.btn-full {
-  width: 100%;
-  padding: 14px;
-}
+.btn-primary:hover:not(:disabled) { background: #4338ca; }
+.btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
+.btn-full { width: 100%; padding: 14px; font-size: 0.95rem; }
 
 .btn-danger {
   background: #dc2626;
@@ -1025,387 +1178,21 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: background 0.2s;
 }
 
-.btn-danger:hover {
-  background: #b91c1c;
-}
+.btn-danger:hover { background: #b91c1c; }
 
-/* ── MESAS ── */
-.tabs-zone-admin {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.tabs-zone-admin button {
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  font-weight: 600;
-  cursor: pointer;
-  color: #475569;
-  transition: all 0.2s;
-  white-space: nowrap;
-}
-
-.tabs-zone-admin button.active {
-  background: #4f46e5;
-  color: white;
-  border-color: #4f46e5;
-}
-
-.mesas-admin-layout {
-  display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 24px;
-  align-items: start;
-}
-
-.mapa-admin-container {
-  height: 600px;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  background: #fff;
-  position: sticky;
-  top: 0;
-}
-
-.mesas-lista-admin {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  max-height: 600px;
-  overflow-y: auto;
-  padding-right: 8px;
-}
-
-.mesa-card {
-  background: white;
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  border: 1px solid #e2e8f0;
-  transition: all 0.2s;
-  cursor: pointer;
-}
-
-.mesa-card:hover {
-  border-color: #cbd5e1;
-}
-
-.mesa-card.selected-card {
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
-}
-
-.mesa-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.mesa-nombre-input {
-  font-weight: 700;
-  color: #0f172a;
-  font-size: 1rem;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 2px 4px;
-  border-radius: 4px;
-  width: 100%;
-  min-width: 0;
-  transition: all 0.2s;
-  outline: none;
-}
-
-.mesa-nombre-input:hover {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-}
-
-.mesa-nombre-input:focus {
-  border-color: #4f46e5;
-  background: white;
-}
-
-.mesa-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.btn-eliminar-mesa {
-  width: 24px;
-  height: 24px;
+.btn-close {
   background: #fee2e2;
   color: #dc2626;
   border: none;
-  border-radius: 50%;
-  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 8px;
   font-weight: 700;
-  font-size: 0.75rem;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.btn-eliminar-mesa:hover {
-  background: #dc2626;
-  color: white;
-}
-
-.mesa-estado {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 20px;
-}
-
-.mesa-estado.libre {
-  background: #dcfce7;
-  color: #16a34a;
-}
-
-.mesa-estado.ocupada {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-.mesa-capacidad {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.85rem;
-  color: #64748b;
-}
-
-.mesa-capacidad input {
-  width: 56px;
-  padding: 6px 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  cursor: pointer;
   font-size: 0.9rem;
-  text-align: center;
-}
-
-/* ── LAYOUT COMPARTIDO ── */
-.productos-layout {
-  display: grid;
-  grid-template-columns: 340px 1fr;
-  gap: 24px;
-  align-items: start;
-}
-
-.product-form-card {
-  background: white;
-  border-radius: 14px;
-  padding: 24px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-  position: sticky;
-  top: 0;
-}
-
-.product-form-card h3,
-.productos-lista h3 {
-  font-size: 1rem;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 18px;
-}
-
-.form-hint {
-  font-size: 0.82rem;
-  color: #64748b;
-  line-height: 1.5;
-}
-
-.product-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group label {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #475569;
-}
-
-.form-group input,
-.form-group select {
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  color: #0f172a;
-  transition: border-color 0.2s;
-  outline: none;
-  background: white;
-}
-
-.form-group input:focus,
-.form-group select:focus {
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-}
-
-/* ── NUEVO: CSS PARA EL SELECTOR DE EMOJIS ── */
-.emoji-selector-container {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
-
-.btn-emoji {
-  padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: fit-content;
-  font-size: 0.95rem;
-  color: #475569;
-  font-weight: 500;
   transition: all 0.2s;
 }
 
-.btn-emoji:hover {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-}
-
-.emoji-preview {
-  font-size: 1.4rem;
-  line-height: 1;
-}
-
-.picker-popup {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 50;
-  margin-top: 8px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-  border-radius: 10px;
-  /* Esto asegura que no se salga de la pantalla en pantallas pequeñas */
-  max-width: 100%;
-}
-
-/* ── FIN EMOJI CSS ── */
-
-/* ── CARTA ── */
-.productos-lista {
-  background: white;
-  border-radius: 14px;
-  padding: 24px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-}
-
-.empty-productos {
-  color: #94a3b8;
-  text-align: center;
-  padding: 40px 0;
-  font-size: 0.95rem;
-}
-
-.categoria-grupo {
-  margin-bottom: 8px;
-}
-
-.categoria-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0 8px;
-  border-bottom: 2px solid #f1f5f9;
-  margin-bottom: 4px;
-  margin-top: 16px;
-}
-
-.categoria-icono {
-  font-size: 1.2rem;
-}
-
-.categoria-nombre {
-  font-weight: 700;
-  color: #0f172a;
-  flex: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-size: 0.8rem;
-}
-
-.categoria-count {
-  background: #f1f5f9;
-  color: #64748b;
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 20px;
-}
-
-.producto-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid #f8fafc;
-}
-
-.producto-row:last-child {
-  border-bottom: none;
-}
-
-.producto-icon {
-  font-size: 1.5rem;
-}
-
-.producto-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.producto-name {
-  font-weight: 600;
-  color: #0f172a;
-  font-size: 0.95rem;
-}
-
-.producto-cat {
-  font-size: 0.78rem;
-  color: #94a3b8;
-}
-
-.producto-price {
-  font-weight: 700;
-  color: #4f46e5;
-  font-size: 0.95rem;
-  min-width: 60px;
-  text-align: right;
-}
+.btn-close:hover { background: #dc2626; color: white; }
 
 .btn-eliminar {
   width: 30px;
@@ -1424,36 +1211,426 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   flex-shrink: 0;
 }
 
-.btn-eliminar:hover {
-  background: #dc2626;
-  color: white;
+.btn-eliminar:hover { background: #dc2626; color: white; }
+
+.btn-text-danger {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.2s;
 }
 
-/* ── EMPLEADOS ── */
-.empleados-layout {
+.btn-text-danger:hover { background: #fee2e2; color: #dc2626; }
+
+/* ── INPUTS ── */
+.input-num, .input-date, .input-select {
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: white;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input-num { width: 80px; text-align: center; }
+.input-date:focus, .input-num:focus, .input-select:focus { border-color: #4f46e5; }
+
+/* ── TABS ── */
+.tabs-zone-admin {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  align-items: center;
+}
+
+.tabs-zone-admin button {
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  font-weight: 600;
+  cursor: pointer;
+  color: #475569;
+  transition: all 0.2s;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.tabs-zone-admin button.active { background: #4f46e5; color: white; border-color: #4f46e5; }
+.tabs-zone-admin button:hover:not(.active) { background: #f1f5f9; }
+
+.btn-gestionar-zonas {
+  border-style: dashed !important;
+  background: transparent !important;
+  color: #64748b !important;
+}
+
+.btn-gestionar-zonas:hover {
+  border-color: #4f46e5 !important;
+  color: #4f46e5 !important;
+  background: #ede9fe !important;
+}
+
+/* ── FINANZAS: KPIs ── */
+.kpi-grid {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.kpi-card {
+  background: white;
+  padding: 22px 24px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kpi-card.highlight { background: #f0fdf4; border-color: #bbf7d0; }
+
+.kpi-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.kpi-card.highlight .kpi-title { color: #15803d; }
+
+.kpi-value {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.kpi-card.highlight .kpi-value { color: #16a34a; }
+
+/* ── FINANZAS: FILTROS ── */
+.finanzas-filtros {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  background: #f8fafc;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+}
+
+.form-group-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.form-group-inline label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #475569;
+  white-space: nowrap;
+}
+
+/* ── FINANZAS: TICKETS ── */
+.tickets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.factura-card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+
+.factura-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 6px 12px rgba(0,0,0,0.06);
+  transform: translateY(-2px);
+}
+
+.f-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.f-mesa { font-weight: 800; color: #0f172a; font-size: 1rem; }
+.f-mesa small { color: #64748b; font-weight: 600; font-size: 0.82rem; }
+
+.f-metodo {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+.f-metodo.efectivo { background: #dcfce7; color: #16a34a; }
+.f-metodo.tarjeta  { background: #dbeafe; color: #1d4ed8; }
+
+.f-body { display: flex; justify-content: space-between; align-items: center; }
+.f-empleado { font-size: 0.88rem; color: #475569; font-weight: 500; }
+.f-hora     { font-size: 0.82rem; color: #94a3b8; font-weight: 600; }
+
+.f-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.f-total { font-size: 1.35rem; font-weight: 900; color: #0f172a; }
+
+.ticket-actions { display: flex; gap: 8px; }
+
+.btn-icon {
+  background: #f1f5f9;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: 0.2s;
+  font-size: 0.95rem;
+}
+
+.btn-icon.btn-edit:hover { background: #e0e7ff; }
+.btn-icon.btn-del:hover  { background: #fee2e2; }
+
+/* ── FINANZAS: RENDIMIENTO ── */
+.rendimiento-lista { display: flex; flex-direction: column; gap: 14px; }
+
+.rendimiento-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: white;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.rank-badge {
+  width: 32px;
+  height: 32px;
+  background: #4f46e5;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.empleado-info { display: flex; flex-direction: column; min-width: 120px; }
+.empleado-nombre { font-weight: 700; color: #0f172a; font-size: 0.95rem; }
+.empleado-pedidos { font-size: 0.78rem; color: #64748b; }
+
+.barra-progreso-wrapper {
+  flex: 1;
+  height: 8px;
+  background: #f1f5f9;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.barra-progreso {
+  height: 100%;
+  background: linear-gradient(90deg, #4f46e5, #818cf8);
+  border-radius: 10px;
+  transition: width 0.5s ease;
+  min-width: 4px;
+}
+
+.rendimiento-total {
+  font-weight: 800;
+  color: #0f172a;
+  font-size: 1rem;
+  min-width: 80px;
+  text-align: right;
+}
+
+/* ── LAYOUT DOS COLUMNAS (Menú y Empleados) ── */
+.dos-columnas {
+  display: grid;
+  grid-template-columns: 340px 1fr;
   gap: 24px;
   align-items: start;
 }
 
-.empleados-left {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+.columna-izq { display: flex; flex-direction: column; gap: 0; }
+
+/* ── TARJETAS DE FORMULARIO Y LISTA ── */
+.form-card, .lista-card {
+  background: white;
+  border-radius: 14px;
+  padding: 24px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 
+.form-card { position: sticky; top: 0; }
+
+.form-card-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 18px;
+}
+
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.form-hint {
+  font-size: 0.82rem;
+  color: #64748b;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.form-fields { display: flex; flex-direction: column; gap: 14px; }
+
+.field-group { display: flex; flex-direction: column; gap: 6px; }
+
+.field-group label, .field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.field-group input,
+.field-group select {
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: white;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+.field-group input:focus,
+.field-group select:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
+}
+
+.two-cols-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+/* ── FILAS DE ITEMS ── */
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.item-row:last-child { border-bottom: none; }
+
+.item-icon { font-size: 1.5rem; flex-shrink: 0; }
+
+.item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item-name {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-sub { font-size: 0.78rem; color: #94a3b8; }
+.item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
+
+/* ── MENÚ: CATEGORÍAS ── */
+.categoria-grupo { margin-bottom: 6px; }
+
+.categoria-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 8px;
+  border-bottom: 2px solid #f1f5f9;
+  margin-bottom: 4px;
+  margin-top: 16px;
+}
+
+.categoria-icono { font-size: 1.1rem; }
+
+.categoria-nombre {
+  font-weight: 700;
+  color: #0f172a;
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 0.78rem;
+}
+
+.categoria-count {
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+/* ── EMPLEADOS ── */
 .empleado-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid #f1f5f9;
 }
 
-.empleado-row:last-child {
-  border-bottom: none;
-}
+.empleado-row:last-child { border-bottom: none; }
 
 .empleado-avatar {
   width: 38px;
@@ -1470,7 +1647,7 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
 }
 
 .rol-badge {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 700;
   padding: 4px 10px;
   border-radius: 20px;
@@ -1478,92 +1655,25 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   flex-shrink: 0;
 }
 
-.rol-badge.admin {
-  background: #ede9fe;
-  color: #6d28d9;
-}
-
-.rol-badge.camarero {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.rol-badge.cocinero {
-  background: #fef3c7;
-  color: #b45309;
-}
-
-/* ── INVITACIONES ── */
-.invitacion-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.invitacion-row:last-child {
-  border-bottom: none;
-}
-
-.codigo-badge {
-  font-family: 'Courier New', monospace;
-  font-size: 0.82rem;
-  font-weight: 800;
-  padding: 5px 10px;
-  border-radius: 8px;
-  letter-spacing: 2px;
-  flex-shrink: 0;
-}
-
-.codigo-badge.pendiente {
-  background: #fef3c7;
-  color: #b45309;
-  border: 1px dashed #fcd34d;
-}
-
-.codigo-badge.usada {
-  background: #dcfce7;
-  color: #16a34a;
-}
-
-/* ── NUEVOS ESTILOS PARA UX EMPLEADOS ── */
-.min-width-0 {
-  min-width: 0;
-}
-
-.truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
+.rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
+.rol-badge.cocinero { background: #fef3c7; color: #b45309; }
 
 .activo-toggle {
   border: none;
   padding: 4px 10px;
   border-radius: 20px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 700;
   cursor: pointer;
   transition: filter 0.2s;
   flex-shrink: 0;
 }
 
-.activo-toggle.activo {
-  background: #dcfce7;
-  color: #16a34a;
-}
+.activo-toggle.activo   { background: #dcfce7; color: #16a34a; }
+.activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
+.activo-toggle:hover { filter: brightness(0.94); }
 
-.activo-toggle.inactivo {
-  background: #f1f5f9;
-  color: #94a3b8;
-}
-
-.activo-toggle:hover {
-  filter: brightness(0.95);
-}
-
-/* Filtros de rol */
 .filtros-rol {
   display: flex;
   gap: 8px;
@@ -1583,66 +1693,262 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: 0.2s;
 }
 
-.filtros-rol button.active {
-  background: #4f46e5;
-  color: white;
+.filtros-rol button.active { background: #4f46e5; color: white; }
+.filtros-rol button:hover:not(.active) { background: #e2e8f0; }
+
+/* ── INVITACIONES ── */
+.codigo-badge {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 8px;
+  letter-spacing: 2px;
+  flex-shrink: 0;
 }
 
-.filtros-rol button:hover:not(.active) {
-  background: #e2e8f0;
+.codigo-badge.pendiente { background: #fef3c7; color: #b45309; border: 1px dashed #fcd34d; }
+.codigo-badge.usada     { background: #dcfce7; color: #16a34a; }
+
+/* ── EMOJI PICKER ── */
+.emoji-selector-container { position: relative; }
+
+.btn-emoji {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #475569;
+  font-weight: 500;
+  transition: all 0.2s;
 }
 
-/* Botón y header para limpiar códigos */
-.section-header-flex {
+.btn-emoji:hover { background: #f1f5f9; border-color: #cbd5e1; }
+.emoji-preview { font-size: 1.4rem; line-height: 1; }
+
+.picker-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 100;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.12);
+  border-radius: 10px;
+}
+
+/* ── ESTADOS VACÍOS ── */
+.empty-state-box {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 20px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.card-container {
+  background: white;
+  border-radius: 14px;
+  padding: 24px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* ── MODALES ── */
+.modal-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: #f8fafc;
+  width: 860px;
+  max-width: 95vw;
+  max-height: 90vh;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  animation: modalIn 0.25s ease-out;
+}
+
+.modal-sm { width: 700px; }
+
+.modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 18px;
+  padding: 20px 24px;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
 }
 
-.btn-icon-text {
-  background: transparent;
-  border: none;
-  color: #64748b;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: 0.2s;
-  padding: 4px 8px;
+.modal-header h2 { font-size: 1.2rem; font-weight: 800; color: #0f172a; }
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ── MODAL TICKET DETALLE ── */
+.modal-ticket {
+  background: white;
+  width: 380px;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  animation: modalIn 0.25s ease-out;
+}
+
+.ticket-paper-admin {
+  padding: 28px 24px 20px;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.ticket-top { text-align: center; margin-bottom: 16px; }
+.ticket-top h2 { font-size: 1.4rem; font-weight: 900; margin: 0; }
+.ticket-sub { font-size: 0.85rem; color: #64748b; margin: 4px 0 12px; }
+.ticket-info { font-size: 0.9rem; margin: 2px 0; }
+.ticket-info.muted { color: #64748b; font-size: 0.82rem; }
+.ticket-divider { border-top: 1px dashed #cbd5e1; margin: 14px 0; }
+
+.ticket-items-admin {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.t-item-admin { display: flex; font-size: 0.92rem; gap: 8px; }
+.t-qty-admin  { width: 30px; font-weight: 700; flex-shrink: 0; }
+.t-name-admin { flex: 1; word-break: break-word; }
+.t-price-admin{ font-weight: 700; white-space: nowrap; }
+
+.ticket-total-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+/* ── MODAL EDITAR FACTURA ── */
+.edit-items-container {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 4px;
+}
+
+.edit-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+
+.edit-item-row {
+  display: flex;
+  align-items: center;
+  background: white;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
+  gap: 10px;
 }
 
-.btn-icon-text:hover {
+.edit-item-name {
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-item-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.edit-sep { font-size: 0.8rem; color: #94a3b8; }
+
+.edit-input-sm {
+  width: 58px;
+  padding: 4px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  text-align: center;
+  outline: none;
+  font-size: 0.88rem;
+}
+
+.edit-input-sm:focus { border-color: #4f46e5; }
+
+.btn-eliminar-sm {
+  width: 24px;
+  height: 24px;
   background: #fee2e2;
   color: #dc2626;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
 }
 
+.btn-eliminar-sm:hover { background: #dc2626; color: white; }
+
+.add-item-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ── ANIMACIONES ── */
+@keyframes modalIn {
+  from { transform: translateY(16px) scale(0.98); opacity: 0; }
+  to   { transform: translateY(0)    scale(1);    opacity: 1; }
+}
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+.fade-enter-from,  .fade-leave-to     { opacity: 0; }
+
+/* ── RESPONSIVE ── */
 @media (max-width: 1100px) {
-  .empleados-layout {
-    grid-template-columns: 1fr;
-  }
+  .dos-columnas { grid-template-columns: 1fr; }
+  .form-card { position: static; }
 }
 
 @media (max-width: 900px) {
-  .productos-layout {
-    grid-template-columns: 1fr;
-  }
-  
-  .mesas-admin-layout {
-    grid-template-columns: 1fr;
-  }
+  .content { padding: 20px; }
+  .modal-content { width: 95%; }
+  .modal-ticket { width: 95%; }
+  .tickets-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; }
+}
 
-  .mapa-admin-container {
-    position: static;
-    height: 400px;
-  }
-
-  .product-form-card {
-    position: static;
-  }
-
-  .content {
-    padding: 20px;
-  }
+@media (max-width: 600px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+  .finanzas-filtros { flex-direction: column; }
 }
 </style>
