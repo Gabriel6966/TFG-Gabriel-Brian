@@ -2,10 +2,11 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
-  query, orderBy, where, deleteDoc, doc, updateDoc
+  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc, getDoc
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
+import { useNegocio } from '../composables/useNegocio'
 import EmojiPicker from 'vue3-emoji-picker'
 import FloorEditor from '../components/pos/FloorEditor.vue'
 
@@ -72,6 +73,7 @@ interface Factura {
 }
 
 const { logout, localId } = useAuth()
+const { config: configNegocio, iniciar: iniciarNegocio } = useNegocio()
 
 const currentTab = ref('finanzas')
 const mesas = ref<Mesa[]>([])
@@ -114,9 +116,24 @@ const nuevoItemSeleccionado = ref('')
 // ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
 const zonaActiva = ref('')
-
-// Posiciones guardadas en localStorage para el FloorEditor
 const posicionesMesas = ref<Record<string, { x: number, y: number }>>({})
+
+// ── NEGOCIO ──
+const configEditando = ref({
+  nombreNegocio: '',
+  logoUrl: '',
+  colorAcento: '#4f46e5'
+})
+const subiendoLogo = ref(false)
+const guardandoConfig = ref(false)
+
+const CLOUDINARY_CLOUD = 'dnlcwm5x9'
+const CLOUDINARY_PRESET = 'easyorder_uploads'
+
+const COLORES_PRESET = [
+  '#4f46e5', '#dc2626', '#16a34a', '#d97706',
+  '#0891b2', '#7c3aed', '#db2777', '#0f172a'
+]
 
 // ── LISTENERS ──
 let unsubscribeMesas: (() => void) | null = null
@@ -156,7 +173,7 @@ const empleadosConVentasDia = computed(() =>
   Array.from(new Set(facturas.value.map(f => f.usuarioNombre))).sort()
 )
 
-// ── COMPUTED: MESAS PARA EL EDITOR ──
+// ── COMPUTED: MESAS ──
 const mesasFiltradasPorZona = computed(() =>
   mesas.value.filter(m => m.zona === zonaActiva.value || (!m.zona && zonas.value.length === 0))
 )
@@ -201,8 +218,15 @@ const cargarFacturas = (fecha: string) => {
 
 watch(filtroFecha, (newFecha) => cargarFacturas(newFecha))
 
+// Sincronizar configEditando con configNegocio cuando cambia
+watch(configNegocio, (val) => {
+  configEditando.value = { ...val }
+}, { immediate: true, deep: true })
+
 onMounted(() => {
   if (!localId.value) return
+
+  iniciarNegocio(localId.value)
 
   posicionesMesas.value = JSON.parse(
     localStorage.getItem(`posicionesMesas_${localId.value}`) || '{}'
@@ -264,6 +288,50 @@ onUnmounted(() => {
   unsubscribeEmpleados?.()
   unsubscribeFacturas?.()
 })
+
+// ── ACCIONES: NEGOCIO ──
+const guardarConfig = async () => {
+  if (!localId.value) return
+  guardandoConfig.value = true
+  try {
+    await setDoc(doc(db, `locales/${localId.value}/config`, 'negocio'), {
+      ...configEditando.value
+    })
+    alert('✓ Configuración guardada correctamente.')
+  } catch {
+    alert('Error al guardar la configuración.')
+  } finally {
+    guardandoConfig.value = false
+  }
+}
+
+const subirLogo = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length) return
+  const file = input.files[0]
+
+  if (!file.type.startsWith('image/')) return alert('Solo se permiten imágenes.')
+  if (file.size > 2 * 1024 * 1024) return alert('La imagen no puede superar 2MB.')
+
+  subiendoLogo.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}`)
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
+      { method: 'POST', body: formData }
+    )
+    const data = await res.json()
+    configEditando.value.logoUrl = data.secure_url
+  } catch {
+    alert('Error al subir la imagen.')
+  } finally {
+    subiendoLogo.value = false
+  }
+}
 
 // ── ACCIONES: MAPA ──
 const handleUpdatePosition = (id: string, x: number, y: number) => {
@@ -481,8 +549,8 @@ const eliminarFactura = async (id: string) => {
 
 // ── EMOJI PICKER ──
 const onSelectEmojiCategoria = (e: any) => { nuevaCategoria.value.icono = e.i; mostrarSelectorCategoria.value = false }
-const onSelectEmojiProducto = (e: any) => { nuevoProducto.value.icon = e.i; mostrarSelectorProducto.value = false }
-const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSelectorZona.value = false }
+const onSelectEmojiProducto  = (e: any) => { nuevoProducto.value.icon  = e.i; mostrarSelectorProducto.value  = false }
+const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; mostrarSelectorZona.value      = false }
 </script>
 
 <template>
@@ -491,17 +559,38 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
     <!-- ── SIDEBAR ── -->
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <h2>EasyOrder</h2>
-        <span class="admin-tag">Admin</span>
+        <div class="sidebar-brand-logo">
+          <img
+            v-if="configNegocio.logoUrl"
+            :src="configNegocio.logoUrl"
+            class="sidebar-logo-img"
+            alt="Logo"
+          />
+          <div
+            v-else
+            class="sidebar-logo-placeholder"
+            :style="{ background: configNegocio.colorAcento || '#4f46e5' }"
+          >
+            {{ configNegocio.nombreNegocio?.charAt(0) || 'E' }}
+          </div>
+        </div>
+        <div class="sidebar-brand-texts">
+          <h2>{{ configNegocio.nombreNegocio || 'EasyOrder' }}</h2>
+          <span class="admin-tag" :style="{ background: configNegocio.colorAcento || '#4f46e5' }">Admin</span>
+        </div>
       </div>
+
       <nav class="sidebar-nav">
         <button :class="{ active: currentTab === 'finanzas' }" @click="currentTab = 'finanzas'">💰 Finanzas</button>
         <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">🪑 Sala</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
         <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">👥 Empleados</button>
+        <button :class="{ active: currentTab === 'negocio' }" @click="currentTab = 'negocio'">🏢 Mi Negocio</button>
       </nav>
+
       <div class="sidebar-footer">
         <div class="local-info">🏢 {{ localId }}</div>
+        <div class="powered-by">powered by EasyOrder</div>
         <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
       </div>
     </aside>
@@ -521,7 +610,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
           </div>
         </div>
 
-        <!-- KPIs -->
         <div class="kpi-grid">
           <div class="kpi-card highlight">
             <span class="kpi-title">Total Recaudado</span>
@@ -541,7 +629,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
           </div>
         </div>
 
-        <!-- Sub-tabs finanzas -->
         <div class="tabs-zone-admin">
           <button :class="{ active: finanzasSubTab === 'tickets' }" @click="finanzasSubTab = 'tickets'">
             🧾 Registro de Tickets
@@ -551,7 +638,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
           </button>
         </div>
 
-        <!-- Tickets -->
         <div v-if="finanzasSubTab === 'tickets'" class="card-container">
           <div class="finanzas-filtros">
             <div class="form-group-inline">
@@ -596,14 +682,13 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                 <span class="f-total">{{ f.total.toFixed(2) }} €</span>
                 <div class="ticket-actions">
                   <button class="btn-icon btn-edit" @click.stop="abrirEditarFactura(f)" title="Editar">✏️</button>
-                  <button class="btn-icon btn-del"  @click.stop="eliminarFactura(f.id)"  title="Eliminar">🗑️</button>
+                  <button class="btn-icon btn-del" @click.stop="eliminarFactura(f.id)" title="Eliminar">🗑️</button>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Rendimiento empleados -->
         <div v-if="finanzasSubTab === 'rendimiento'" class="card-container">
           <div v-if="ventasPorEmpleado.length === 0" class="empty-state-box">
             No hay datos de ventas para este día.
@@ -616,10 +701,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                 <span class="empleado-pedidos">{{ emp.pedidos }} pedido{{ emp.pedidos !== 1 ? 's' : '' }}</span>
               </div>
               <div class="barra-progreso-wrapper">
-                <div
-                  class="barra-progreso"
-                  :style="{ width: `${(emp.total / totalVentas) * 100}%` }"
-                ></div>
+                <div class="barra-progreso" :style="{ width: `${(emp.total / totalVentas) * 100}%` }"></div>
               </div>
               <span class="rendimiento-total">{{ emp.total.toFixed(2) }} €</span>
             </div>
@@ -627,7 +709,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
         </div>
       </div>
 
-      <!-- ══ TAB: SALA / MESAS ══ -->
+      <!-- ══ TAB: SALA ══ -->
       <div v-if="currentTab === 'mesas'">
         <div class="page-header">
           <div>
@@ -658,7 +740,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
         </div>
 
         <FloorEditor
-          v-if="zonas.length > 0 && localId"
+          v-if="zonas.length > 0 && localId && zonas.find(z => z.nombre === zonaActiva)?.id"
           :local-id="localId"
           :zona-id="zonas.find(z => z.nombre === zonaActiva)?.id ?? ''"
           :zona-nombre="zonaActiva"
@@ -688,7 +770,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
         </div>
 
         <div class="dos-columnas">
-          <!-- Formulario nuevo producto -->
           <div class="form-card">
             <h3 class="form-card-title">Nuevo plato</h3>
             <div v-if="categorias.length === 0" class="empty-state-box">
@@ -727,7 +808,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
             </div>
           </div>
 
-          <!-- Carta actual agrupada -->
           <div class="lista-card">
             <h3 class="form-card-title">Carta actual</h3>
             <div v-if="productos.length === 0" class="empty-state-box">No hay productos todavía.</div>
@@ -760,9 +840,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
         </div>
 
         <div class="dos-columnas">
-          <!-- Columna izquierda: invitaciones -->
           <div class="columna-izq">
-
             <div class="form-card">
               <h3 class="form-card-title">🔑 Nueva invitación</h3>
               <p class="form-hint">
@@ -806,24 +884,19 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                 <button v-if="inv.estado === 'pendiente'" class="btn-eliminar" @click="eliminarInvitacion(inv.id)">✕</button>
               </div>
             </div>
-
           </div>
 
-          <!-- Columna derecha: lista de empleados -->
           <div class="lista-card">
             <h3 class="form-card-title">👥 Equipo registrado</h3>
-
             <div class="filtros-rol">
               <button :class="{ active: filtroRol === 'todos' }"    @click="filtroRol = 'todos'">Todos</button>
               <button :class="{ active: filtroRol === 'admin' }"    @click="filtroRol = 'admin'">Admins</button>
               <button :class="{ active: filtroRol === 'camarero' }" @click="filtroRol = 'camarero'">Camareros</button>
               <button :class="{ active: filtroRol === 'cocinero' }" @click="filtroRol = 'cocinero'">Cocineros</button>
             </div>
-
             <div v-if="empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol).length === 0" class="empty-state-box">
               No hay empleados con este filtro.
             </div>
-
             <div
               v-for="emp in empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol)"
               :key="emp.id"
@@ -845,6 +918,149 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
               <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ══ TAB: MI NEGOCIO ══ -->
+      <div v-if="currentTab === 'negocio'">
+        <div class="page-header">
+          <div>
+            <h1>Identidad del Negocio</h1>
+            <p class="page-subtitle">Personaliza cómo aparece tu negocio en EasyOrder</p>
+          </div>
+        </div>
+
+        <div class="dos-columnas">
+
+          <!-- Formulario -->
+          <div class="form-card">
+            <h3 class="form-card-title">⚙️ Configuración</h3>
+            <div class="form-fields">
+
+              <!-- Nombre -->
+              <div class="field-group">
+                <label>Nombre del negocio</label>
+                <input v-model="configEditando.nombreNegocio" placeholder="Ej: Bar Scarlatti" />
+              </div>
+
+              <!-- Logo -->
+              <div class="field-group">
+                <label>Logo del negocio</label>
+                <div class="logo-upload-area">
+                  <img
+                    v-if="configEditando.logoUrl"
+                    :src="configEditando.logoUrl"
+                    class="logo-preview"
+                    alt="Logo"
+                  />
+                  <div v-else class="logo-placeholder">
+                    <span>Sin logo</span>
+                  </div>
+                  <label class="btn-upload-logo" :class="{ loading: subiendoLogo }">
+                    {{ subiendoLogo ? 'Subiendo...' : '📤 Subir imagen' }}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style="display: none"
+                      @change="subirLogo"
+                      :disabled="subiendoLogo"
+                    />
+                  </label>
+                  <p class="upload-hint">PNG, JPG o SVG · Máx 2MB</p>
+                </div>
+              </div>
+
+              <!-- Color de acento -->
+              <div class="field-group">
+                <label>Color principal</label>
+                <div class="color-picker-row">
+                  <input type="color" v-model="configEditando.colorAcento" class="color-input" />
+                  <span class="color-value">{{ configEditando.colorAcento }}</span>
+                  <div class="color-preview-pill" :style="{ background: configEditando.colorAcento }">Aa</div>
+                </div>
+                <div class="color-presets">
+                  <button
+                    v-for="color in COLORES_PRESET"
+                    :key="color"
+                    class="color-preset-btn"
+                    :style="{ background: color }"
+                    :class="{ active: configEditando.colorAcento === color }"
+                    @click="configEditando.colorAcento = color"
+                    :title="color"
+                  />
+                </div>
+              </div>
+
+              <button class="btn-primary btn-full" @click="guardarConfig" :disabled="guardandoConfig">
+                {{ guardandoConfig ? 'Guardando...' : '✓ Guardar configuración' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Preview -->
+          <div class="lista-card">
+            <h3 class="form-card-title">👁 Vista previa</h3>
+            <p class="form-hint" style="margin-bottom: 20px;">
+              Así verán tu negocio los empleados en la aplicación.
+            </p>
+
+            <!-- Preview sidebar camarero -->
+            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 8px;">
+              Sidebar camarero
+            </p>
+            <div class="preview-sidebar">
+              <div class="preview-brand" :style="{ borderBottomColor: configEditando.colorAcento }">
+                <img
+                  v-if="configEditando.logoUrl"
+                  :src="configEditando.logoUrl"
+                  class="preview-logo"
+                  alt="Logo"
+                />
+                <div
+                  v-else
+                  class="preview-logo-placeholder"
+                  :style="{ background: configEditando.colorAcento }"
+                >
+                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
+                </div>
+                <div>
+                  <div class="preview-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</div>
+                  <div class="preview-powered">powered by EasyOrder</div>
+                </div>
+              </div>
+              <div class="preview-nav">
+                <div class="preview-nav-item" :style="{ background: configEditando.colorAcento }">🪑 Sala</div>
+                <div class="preview-nav-item-inactive">📊 Resumen</div>
+                <div class="preview-nav-item-inactive">🔔 Pedidos</div>
+              </div>
+            </div>
+
+            <!-- Preview cocina -->
+            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin: 20px 0 8px;">
+              Barra de cocina
+            </p>
+            <div class="preview-cocina-bar">
+              <div class="preview-cocina-left">
+                <img
+                  v-if="configEditando.logoUrl"
+                  :src="configEditando.logoUrl"
+                  class="preview-logo-sm"
+                  alt="Logo"
+                />
+                <div
+                  v-else
+                  class="preview-logo-sm-placeholder"
+                  :style="{ background: configEditando.colorAcento }"
+                >
+                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
+                </div>
+                <span class="preview-cocina-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</span>
+                <span class="preview-cocina-badge" :style="{ background: configEditando.colorAcento }">EasyOrder</span>
+              </div>
+              <span class="preview-cocina-role">Cocina</span>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -917,7 +1133,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                   <button class="btn-primary" @click="agregarItemTicket" style="padding: 8px 16px;">OK</button>
                 </div>
               </div>
-
               <div class="two-cols-fields">
                 <div class="field-group">
                   <label>Total (€)</label>
@@ -931,7 +1146,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                   </select>
                 </div>
               </div>
-
               <button @click="guardarEdicionFactura" class="btn-primary btn-full">Guardar Cambios</button>
             </div>
           </div>
@@ -1047,7 +1261,6 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 
 * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; }
 
-/* ── LAYOUT BASE ── */
 .admin-layout { display: flex; min-height: 100vh; background: #f3f4f6; }
 
 /* ── SIDEBAR ── */
@@ -1071,15 +1284,39 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   margin-bottom: 8px;
 }
 
-.sidebar-brand h2 { font-size: 1.15rem; font-weight: 800; color: white; }
+.sidebar-brand-logo { flex-shrink: 0; }
+
+.sidebar-logo-img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: white;
+}
+
+.sidebar-logo-placeholder {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+
+.sidebar-brand-texts { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sidebar-brand-texts h2 { font-size: 0.95rem; font-weight: 800; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .admin-tag {
-  background: #4f46e5;
   color: white;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 20px;
+  width: fit-content;
+  transition: background 0.3s;
 }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
@@ -1091,7 +1328,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   color: #94a3b8;
   text-align: left;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   border-radius: 8px;
   transition: all 0.2s;
   width: 100%;
@@ -1103,18 +1340,18 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 .sidebar-footer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding-top: 12px;
   border-top: 1px solid #334155;
 }
 
-.local-info {
-  font-size: 0.75rem;
-  color: #64748b;
+.local-info { font-size: 0.72rem; color: #64748b; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.powered-by {
+  font-size: 0.65rem;
+  color: #475569;
   padding: 0 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-style: italic;
 }
 
 .btn-logout {
@@ -1124,7 +1361,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   color: #94a3b8;
   text-align: left;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   border-radius: 8px;
   transition: all 0.2s;
   width: 100%;
@@ -1146,10 +1383,9 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 
 .page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
 .page-subtitle { color: #64748b; font-size: 0.9rem; margin-top: 4px; }
-
 .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
-/* ── BOTONES GLOBALES ── */
+/* ── BOTONES ── */
 .btn-primary {
   background: #4f46e5;
   color: white;
@@ -1280,7 +1516,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   background: #ede9fe !important;
 }
 
-/* ── FINANZAS: KPIs ── */
+/* ── KPIs ── */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1300,26 +1536,12 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 }
 
 .kpi-card.highlight { background: #f0fdf4; border-color: #bbf7d0; }
-
-.kpi-title {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
+.kpi-title { font-size: 0.78rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
 .kpi-card.highlight .kpi-title { color: #15803d; }
-
-.kpi-value {
-  font-size: 1.75rem;
-  font-weight: 800;
-  color: #0f172a;
-}
-
+.kpi-value { font-size: 1.75rem; font-weight: 800; color: #0f172a; }
 .kpi-card.highlight .kpi-value { color: #16a34a; }
 
-/* ── FINANZAS: FILTROS ── */
+/* ── FINANZAS ── */
 .finanzas-filtros {
   display: flex;
   gap: 16px;
@@ -1331,25 +1553,10 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   flex-wrap: wrap;
 }
 
-.form-group-inline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+.form-group-inline { display: flex; align-items: center; gap: 10px; }
+.form-group-inline label { font-size: 0.85rem; font-weight: 700; color: #475569; white-space: nowrap; }
 
-.form-group-inline label {
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: #475569;
-  white-space: nowrap;
-}
-
-/* ── FINANZAS: TICKETS ── */
-.tickets-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 14px;
-}
+.tickets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 
 .factura-card {
   background: white;
@@ -1361,49 +1568,21 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   gap: 10px;
   cursor: pointer;
   transition: all 0.2s;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
 }
 
-.factura-card:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 6px 12px rgba(0,0,0,0.06);
-  transform: translateY(-2px);
-}
+.factura-card:hover { border-color: #cbd5e1; box-shadow: 0 6px 12px rgba(0,0,0,0.06); transform: translateY(-2px); }
 
-.f-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed #e2e8f0;
-}
-
+.f-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #e2e8f0; }
 .f-mesa { font-weight: 800; color: #0f172a; font-size: 1rem; }
 .f-mesa small { color: #64748b; font-weight: 600; font-size: 0.82rem; }
-
-.f-metodo {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 20px;
-}
-
+.f-metodo { font-size: 0.72rem; font-weight: 700; padding: 3px 10px; border-radius: 20px; }
 .f-metodo.efectivo { background: #dcfce7; color: #16a34a; }
 .f-metodo.tarjeta  { background: #dbeafe; color: #1d4ed8; }
-
 .f-body { display: flex; justify-content: space-between; align-items: center; }
 .f-empleado { font-size: 0.88rem; color: #475569; font-weight: 500; }
-.f-hora     { font-size: 0.82rem; color: #94a3b8; font-weight: 600; }
-
-.f-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 8px;
-}
-
+.f-hora { font-size: 0.82rem; color: #94a3b8; font-weight: 600; }
+.f-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 8px; }
 .f-total { font-size: 1.35rem; font-weight: 900; color: #0f172a; }
-
 .ticket-actions { display: flex; gap: 8px; }
 
 .btn-icon {
@@ -1423,7 +1602,7 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 .btn-icon.btn-edit:hover { background: #e0e7ff; }
 .btn-icon.btn-del:hover  { background: #fee2e2; }
 
-/* ── FINANZAS: RENDIMIENTO ── */
+/* ── RENDIMIENTO ── */
 .rendimiento-lista { display: flex; flex-direction: column; gap: 14px; }
 
 .rendimiento-row {
@@ -1437,58 +1616,26 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 }
 
 .rank-badge {
-  width: 32px;
-  height: 32px;
+  width: 32px; height: 32px;
   background: #4f46e5;
   color: white;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 0.9rem;
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 0.9rem; flex-shrink: 0;
 }
 
 .empleado-info { display: flex; flex-direction: column; min-width: 120px; }
 .empleado-nombre { font-weight: 700; color: #0f172a; font-size: 0.95rem; }
 .empleado-pedidos { font-size: 0.78rem; color: #64748b; }
 
-.barra-progreso-wrapper {
-  flex: 1;
-  height: 8px;
-  background: #f1f5f9;
-  border-radius: 10px;
-  overflow: hidden;
-}
+.barra-progreso-wrapper { flex: 1; height: 8px; background: #f1f5f9; border-radius: 10px; overflow: hidden; }
+.barra-progreso { height: 100%; background: linear-gradient(90deg, #4f46e5, #818cf8); border-radius: 10px; transition: width 0.5s ease; min-width: 4px; }
+.rendimiento-total { font-weight: 800; color: #0f172a; font-size: 1rem; min-width: 80px; text-align: right; }
 
-.barra-progreso {
-  height: 100%;
-  background: linear-gradient(90deg, #4f46e5, #818cf8);
-  border-radius: 10px;
-  transition: width 0.5s ease;
-  min-width: 4px;
-}
-
-.rendimiento-total {
-  font-weight: 800;
-  color: #0f172a;
-  font-size: 1rem;
-  min-width: 80px;
-  text-align: right;
-}
-
-/* ── LAYOUT DOS COLUMNAS (Menú y Empleados) ── */
-.dos-columnas {
-  display: grid;
-  grid-template-columns: 340px 1fr;
-  gap: 24px;
-  align-items: start;
-}
-
+/* ── DOS COLUMNAS ── */
+.dos-columnas { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
 .columna-izq { display: flex; flex-direction: column; gap: 0; }
 
-/* ── TARJETAS DE FORMULARIO Y LISTA ── */
 .form-card, .lista-card {
   background: white;
   border-radius: 14px;
@@ -1498,37 +1645,14 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 }
 
 .form-card { position: sticky; top: 0; }
+.form-card-title { font-size: 1rem; font-weight: 700; color: #0f172a; margin-bottom: 18px; }
 
-.form-card-title {
-  font-size: 1rem;
-  font-weight: 700;
-  color: #0f172a;
-  margin-bottom: 18px;
-}
-
-.card-header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.form-hint {
-  font-size: 0.82rem;
-  color: #64748b;
-  line-height: 1.5;
-  margin-bottom: 4px;
-}
-
+.card-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.form-hint { font-size: 0.82rem; color: #64748b; line-height: 1.5; margin-bottom: 4px; }
 .form-fields { display: flex; flex-direction: column; gap: 14px; }
-
 .field-group { display: flex; flex-direction: column; gap: 6px; }
 
-.field-group label, .field-label {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #475569;
-}
+.field-group label, .field-label { font-size: 0.82rem; font-weight: 600; color: #475569; }
 
 .field-group input,
 .field-group select {
@@ -1544,220 +1668,229 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 }
 
 .field-group input:focus,
-.field-group select:focus {
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
-}
+.field-group select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
 
-.two-cols-fields {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
+.two-cols-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
-/* ── FILAS DE ITEMS ── */
-.item-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
+/* ── ITEMS ── */
+.item-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
 .item-row:last-child { border-bottom: none; }
-
 .item-icon { font-size: 1.5rem; flex-shrink: 0; }
-
-.item-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.item-name {
-  font-weight: 600;
-  color: #0f172a;
-  font-size: 0.95rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
+.item-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.item-name { font-weight: 600; color: #0f172a; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-sub { font-size: 0.78rem; color: #94a3b8; }
 .item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
 
-/* ── MENÚ: CATEGORÍAS ── */
+/* ── MENÚ CATEGORÍAS ── */
 .categoria-grupo { margin-bottom: 6px; }
-
-.categoria-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0 8px;
-  border-bottom: 2px solid #f1f5f9;
-  margin-bottom: 4px;
-  margin-top: 16px;
-}
-
+.categoria-header { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; border-bottom: 2px solid #f1f5f9; margin-bottom: 4px; margin-top: 16px; }
 .categoria-icono { font-size: 1.1rem; }
-
-.categoria-nombre {
-  font-weight: 700;
-  color: #0f172a;
-  flex: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-size: 0.78rem;
-}
-
-.categoria-count {
-  background: #f1f5f9;
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 20px;
-}
+.categoria-nombre { font-weight: 700; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.78rem; }
+.categoria-count { background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
 
 /* ── EMPLEADOS ── */
-.empleado-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
+.empleado-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
 .empleado-row:last-child { border-bottom: none; }
 
 .empleado-avatar {
-  width: 38px;
-  height: 38px;
+  width: 38px; height: 38px;
   background: #4f46e5;
   color: white;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 1rem;
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 1rem; flex-shrink: 0;
 }
 
-.rol-badge {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 4px 10px;
-  border-radius: 20px;
-  text-transform: capitalize;
-  flex-shrink: 0;
-}
-
+.rol-badge { font-size: 0.72rem; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: capitalize; flex-shrink: 0; }
 .rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
 .rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
 .rol-badge.cocinero { background: #fef3c7; color: #b45309; }
 
-.activo-toggle {
-  border: none;
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: filter 0.2s;
-  flex-shrink: 0;
-}
-
+.activo-toggle { border: none; padding: 4px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; cursor: pointer; transition: filter 0.2s; flex-shrink: 0; }
 .activo-toggle.activo   { background: #dcfce7; color: #16a34a; }
 .activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
 .activo-toggle:hover { filter: brightness(0.94); }
 
-.filtros-rol {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-
-.filtros-rol button {
-  background: #f1f5f9;
-  border: none;
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #64748b;
-  cursor: pointer;
-  transition: 0.2s;
-}
-
+.filtros-rol { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.filtros-rol button { background: #f1f5f9; border: none; padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; color: #64748b; cursor: pointer; transition: 0.2s; }
 .filtros-rol button.active { background: #4f46e5; color: white; }
 .filtros-rol button:hover:not(.active) { background: #e2e8f0; }
 
 /* ── INVITACIONES ── */
-.codigo-badge {
-  font-family: 'Courier New', monospace;
-  font-size: 0.8rem;
-  font-weight: 800;
-  padding: 4px 10px;
-  border-radius: 8px;
-  letter-spacing: 2px;
-  flex-shrink: 0;
-}
-
+.codigo-badge { font-family: 'Courier New', monospace; font-size: 0.8rem; font-weight: 800; padding: 4px 10px; border-radius: 8px; letter-spacing: 2px; flex-shrink: 0; }
 .codigo-badge.pendiente { background: #fef3c7; color: #b45309; border: 1px dashed #fcd34d; }
 .codigo-badge.usada     { background: #dcfce7; color: #16a34a; }
 
 /* ── EMOJI PICKER ── */
 .emoji-selector-container { position: relative; }
-
-.btn-emoji {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  color: #475569;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
+.btn-emoji { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; cursor: pointer; font-size: 0.9rem; color: #475569; font-weight: 500; transition: all 0.2s; }
 .btn-emoji:hover { background: #f1f5f9; border-color: #cbd5e1; }
 .emoji-preview { font-size: 1.4rem; line-height: 1; }
+.picker-popup { position: absolute; top: calc(100% + 8px); left: 0; z-index: 100; box-shadow: 0 10px 25px rgba(0,0,0,0.12); border-radius: 10px; }
 
-.picker-popup {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 100;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.12);
-  border-radius: 10px;
-}
+/* ── EMPTY STATE ── */
+.empty-state-box { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 10px; padding: 20px; text-align: center; color: #94a3b8; font-size: 0.9rem; }
+.card-container { background: white; border-radius: 14px; padding: 24px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 
-/* ── ESTADOS VACÍOS ── */
-.empty-state-box {
-  background: #f8fafc;
-  border: 1px dashed #cbd5e1;
-  border-radius: 10px;
+/* ── MI NEGOCIO ── */
+.logo-upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   padding: 20px;
-  text-align: center;
-  color: #94a3b8;
-  font-size: 0.9rem;
+  background: #f8fafc;
+  border: 2px dashed #e2e8f0;
+  border-radius: 12px;
 }
 
-.card-container {
-  background: white;
-  border-radius: 14px;
-  padding: 24px;
+.logo-preview {
+  width: 100px;
+  height: 100px;
+  object-fit: contain;
+  border-radius: 12px;
   border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  background: white;
+  padding: 4px;
 }
+
+.logo-placeholder {
+  width: 100px;
+  height: 100px;
+  background: #f1f5f9;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 0.85rem;
+  border: 1px dashed #cbd5e1;
+}
+
+.btn-upload-logo {
+  padding: 8px 16px;
+  background: #4f46e5;
+  color: white;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-upload-logo:hover { background: #4338ca; }
+.btn-upload-logo.loading { background: #a5b4fc; cursor: not-allowed; }
+
+.upload-hint { font-size: 0.72rem; color: #94a3b8; margin: 0; }
+
+.color-picker-row { display: flex; align-items: center; gap: 12px; }
+
+.color-input {
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 2px;
+  background: none;
+}
+
+.color-value { font-size: 0.88rem; font-weight: 600; color: #475569; font-family: monospace; }
+
+.color-preview-pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  color: white;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.color-presets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+.color-preset-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.color-preset-btn:hover { transform: scale(1.15); }
+.color-preset-btn.active { border-color: #0f172a; transform: scale(1.15); }
+
+/* ── PREVIEWS ── */
+.preview-sidebar { background: white; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+
+.preview-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 2px solid #4f46e5;
+  background: white;
+  transition: border-color 0.3s;
+}
+
+.preview-logo { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; }
+
+.preview-logo-placeholder {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 800;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.preview-nombre { font-size: 0.9rem; font-weight: 700; color: #0f172a; }
+.preview-powered { font-size: 0.62rem; color: #94a3b8; font-weight: 500; }
+
+.preview-nav { padding: 8px; display: flex; flex-direction: column; gap: 4px; background: #f8fafc; }
+.preview-nav-item { padding: 8px 12px; border-radius: 6px; color: white; font-size: 0.82rem; font-weight: 600; transition: background 0.3s; }
+.preview-nav-item-inactive { padding: 8px 12px; border-radius: 6px; color: #64748b; font-size: 0.82rem; }
+
+.preview-cocina-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: #1e293b;
+}
+
+.preview-cocina-left { display: flex; align-items: center; gap: 10px; }
+
+.preview-logo-sm {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: white;
+}
+
+.preview-logo-sm-placeholder {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 800;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.preview-cocina-nombre { font-size: 0.9rem; font-weight: 700; color: #f1f5f9; }
+.preview-cocina-badge { font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; color: white; transition: background 0.3s; }
+.preview-cocina-role { font-size: 0.78rem; color: #64748b; font-weight: 600; }
 
 /* ── MODALES ── */
 .modal-backdrop {
@@ -1797,14 +1930,8 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 }
 
 .modal-header h2 { font-size: 1.2rem; font-weight: 800; color: #0f172a; }
+.modal-body { padding: 24px; overflow-y: auto; flex: 1; }
 
-.modal-body {
-  padding: 24px;
-  overflow-y: auto;
-  flex: 1;
-}
-
-/* ── MODAL TICKET DETALLE ── */
 .modal-ticket {
   background: white;
   width: 380px;
@@ -1814,124 +1941,40 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   animation: modalIn 0.25s ease-out;
 }
 
-.ticket-paper-admin {
-  padding: 28px 24px 20px;
-  font-family: 'Courier New', Courier, monospace;
-}
-
+.ticket-paper-admin { padding: 28px 24px 20px; font-family: 'Courier New', Courier, monospace; }
 .ticket-top { text-align: center; margin-bottom: 16px; }
 .ticket-top h2 { font-size: 1.4rem; font-weight: 900; margin: 0; }
 .ticket-sub { font-size: 0.85rem; color: #64748b; margin: 4px 0 12px; }
 .ticket-info { font-size: 0.9rem; margin: 2px 0; }
 .ticket-info.muted { color: #64748b; font-size: 0.82rem; }
 .ticket-divider { border-top: 1px dashed #cbd5e1; margin: 14px 0; }
-
-.ticket-items-admin {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 260px;
-  overflow-y: auto;
-}
-
+.ticket-items-admin { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
 .t-item-admin { display: flex; font-size: 0.92rem; gap: 8px; }
 .t-qty-admin  { width: 30px; font-weight: 700; flex-shrink: 0; }
 .t-name-admin { flex: 1; word-break: break-word; }
 .t-price-admin{ font-weight: 700; white-space: nowrap; }
+.ticket-total-row { display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 900; color: #0f172a; }
 
-.ticket-total-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 1.25rem;
-  font-weight: 900;
-  color: #0f172a;
-}
-
-/* ── MODAL EDITAR FACTURA ── */
-.edit-items-container {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 4px;
-}
-
-.edit-items-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  margin: 8px 0;
-}
-
-.edit-item-row {
-  display: flex;
-  align-items: center;
-  background: white;
-  padding: 8px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  gap: 10px;
-}
-
-.edit-item-name {
-  flex: 1;
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+.edit-items-container { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 4px; }
+.edit-items-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; margin: 8px 0; }
+.edit-item-row { display: flex; align-items: center; background: white; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; gap: 10px; }
+.edit-item-name { flex: 1; font-size: 0.88rem; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edit-item-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .edit-sep { font-size: 0.8rem; color: #94a3b8; }
-
-.edit-input-sm {
-  width: 58px;
-  padding: 4px 6px;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  text-align: center;
-  outline: none;
-  font-size: 0.88rem;
-}
-
+.edit-input-sm { width: 58px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; text-align: center; outline: none; font-size: 0.88rem; }
 .edit-input-sm:focus { border-color: #4f46e5; }
-
-.btn-eliminar-sm {
-  width: 24px;
-  height: 24px;
-  background: #fee2e2;
-  color: #dc2626;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 0.7rem;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-
+.btn-eliminar-sm { width: 24px; height: 24px; background: #fee2e2; color: #dc2626; border: none; border-radius: 50%; cursor: pointer; font-size: 0.7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
 .btn-eliminar-sm:hover { background: #dc2626; color: white; }
-
-.add-item-row {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
+.add-item-row { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ── ANIMACIONES ── */
 @keyframes modalIn {
   from { transform: translateY(16px) scale(0.98); opacity: 0; }
-  to   { transform: translateY(0)    scale(1);    opacity: 1; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
 }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
-.fade-enter-from,  .fade-leave-to     { opacity: 0; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 1100px) {

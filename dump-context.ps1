@@ -7,6 +7,7 @@ $files = @(
     "src/components/pos/PosFloorMap.vue",
     "src/components/pos/PosOrderPanel.vue",
     "src/components/pos/PosSidebar.vue",
+    "src/components/pos/FloorEditor.vue",
     "src/views/LoginView.vue",
     "src/views/RegisterView.vue",
     "src/views/MesasView.vue",
