@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { collection, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from '../../firebase'
 
@@ -8,8 +8,8 @@ const props = defineProps<{
   tables: any[]
   mesaSeleccionada: number | null
   isEditable?: boolean
-  localId?: string   // NUEVO: para leer los elementos decorativos
-  zonaId?: string    // NUEVO: ID del documento de zona en Firestore
+  localId?: string
+  zonaId?: string
 }>()
 
 const emit = defineEmits<{
@@ -19,18 +19,19 @@ const emit = defineEmits<{
 }>()
 
 // ── ELEMENTOS DECORATIVOS ─────────────────────────────────────────
-// Solo lectura: el camarero ve el diseño que creó el admin
+
 interface ElementoDecorativo {
   id: string
   tipo: string
   x: number
   y: number
+  w?: number
+  h?: number
 }
 
 const elementos = ref<ElementoDecorativo[]>([])
 let unsubscribeElementos: (() => void) | null = null
 
-// Catálogo de SVGs — mismo que FloorEditor para que se vean igual
 const CATALOGO: Record<string, { svgPath: string, w: number, h: number }> = {
   'barra': {
     svgPath: `
@@ -173,7 +174,6 @@ const CATALOGO: Record<string, { svgPath: string, w: number, h: number }> = {
   }
 }
 
-// Cargamos los elementos cuando cambia el zonaId
 watch(() => props.zonaId, (newId) => {
   if (newId && props.localId) cargarElementos(newId)
 }, { immediate: true })
@@ -181,7 +181,6 @@ watch(() => props.zonaId, (newId) => {
 const cargarElementos = (zonaId: string) => {
   if (unsubscribeElementos) unsubscribeElementos()
   if (!props.localId) return
-
   const q = query(
     collection(db, `locales/${props.localId}/elementosDecor`),
     where('zonaId', '==', zonaId)
@@ -192,20 +191,20 @@ const cargarElementos = (zonaId: string) => {
 }
 
 const getElementoStyle = (el: ElementoDecorativo) => {
-  const cat = CATALOGO[el.tipo]
+  const cat = CATALOGO[el.tipo as keyof typeof CATALOGO]
   return {
     left: `${el.x}%`,
     top: `${el.y}%`,
     transform: 'translate(-50%, -50%)',
-    width:  `${cat?.w ?? 60}px`,
-    height: `${cat?.h ?? 60}px`,
-    pointerEvents: 'none' as const  // El camarero no puede interactuar con los elementos
+    width:  `${el.w ?? cat?.w ?? 60}px`,
+    height: `${el.h ?? cat?.h ?? 60}px`,
+    pointerEvents: 'none' as const
   }
 }
 
 onUnmounted(() => unsubscribeElementos?.())
 
-// ── LÓGICA DE DRAG (igual que antes) ─────────────────────────────
+// ── LÓGICA DE DRAG ────────────────────────────────────────────────
 
 const mapRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
@@ -272,24 +271,26 @@ const stopDrag = () => {
   <div class="floor-map-wrapper">
     <div ref="mapRef" class="floor-surface">
 
-      <!-- Cuadrícula de fondo — mismo estilo que el editor del admin -->
+      <!-- Cuadrícula de fondo -->
       <div class="map-grid"></div>
 
-      <!-- Elementos decorativos: solo lectura, no interactuables -->
+      <!-- Elementos decorativos: solo lectura -->
       <div
         v-for="el in elementos"
         :key="el.id"
         class="elemento-decor"
         :style="getElementoStyle(el)"
       >
-        <svg
-          viewBox="0 0 100 100"
-          class="elemento-svg"
-          v-html="CATALOGO[el.tipo]?.svgPath"
-        />
+        <!-- DESPUÉS -->
+<svg
+  viewBox="0 0 100 100"
+  preserveAspectRatio="none"
+  class="elemento-svg"
+  v-html="CATALOGO[el.tipo as keyof typeof CATALOGO]?.svgPath"
+/>
       </div>
 
-      <!-- Mesas: interactuables -->
+      <!-- Mesas -->
       <div
         v-for="table in tables"
         :key="table.id"
@@ -346,7 +347,6 @@ const stopDrag = () => {
             <div class="fc-arrow"></div>
           </div>
         </transition>
-
       </div>
     </div>
   </div>
@@ -358,7 +358,7 @@ const stopDrag = () => {
   height: 100%;
   position: relative;
   overflow: hidden;
-  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.05);
+  box-shadow: inset 0 0 40px rgba(0,0,0,0.05);
 }
 
 .floor-surface {
@@ -368,7 +368,6 @@ const stopDrag = () => {
   background: #f8fafc;
 }
 
-/* Cuadrícula — igual que en FloorEditor */
 .map-grid {
   position: absolute;
   inset: 0;
@@ -380,7 +379,6 @@ const stopDrag = () => {
   pointer-events: none;
 }
 
-/* Elementos decorativos — solo visual */
 .elemento-decor {
   position: absolute;
   pointer-events: none;
@@ -393,7 +391,6 @@ const stopDrag = () => {
   display: block;
 }
 
-/* Mesas — igual que antes */
 .table-node {
   position: absolute;
   width: 90px;
@@ -405,9 +402,9 @@ const stopDrag = () => {
   cursor: pointer;
 }
 
-.table-node.editable { cursor: grab; }
-.table-node.dragging { cursor: grabbing; transform: translate(-50%, -50%) scale(1.15); z-index: 1000; opacity: 0.9; }
-.table-node:hover:not(.dragging) { transform: translate(-50%, -50%) scale(1.05); z-index: 20; }
+.table-node.editable  { cursor: grab; }
+.table-node.dragging  { cursor: grabbing; transform: translate(-50%, -50%) scale(1.15); z-index: 1000; opacity: 0.9; }
+.table-node:hover:not(.dragging)  { transform: translate(-50%, -50%) scale(1.05); z-index: 20; }
 .table-node.selected:not(.dragging) { transform: translate(-50%, -50%) scale(1.1); z-index: 30; }
 
 .table-body {
@@ -451,17 +448,16 @@ const stopDrag = () => {
 .table-node.available .chair { background: #14532d; }
 .table-node.occupied .chair  { background: #7f1d1d; }
 
-.chair.top    { top: -8px;  left: 20px; right: 20px; height: 12px; }
-.chair.bottom { bottom: -8px; left: 20px; right: 20px; height: 12px; }
-.chair.left   { left: -8px; top: 20px; bottom: 20px; width: 12px; }
-.chair.right  { right: -8px; top: 20px; bottom: 20px; width: 12px; }
+.chair.top    { top: -8px;    left: 20px;  right: 20px;  height: 12px; }
+.chair.bottom { bottom: -8px; left: 20px;  right: 20px;  height: 12px; }
+.chair.left   { left: -8px;   top: 20px;   bottom: 20px; width: 12px;  }
+.chair.right  { right: -8px;  top: 20px;   bottom: 20px; width: 12px;  }
 
-.table-node:hover:not(.dragging) .chair.top    { top: -12px; }
+.table-node:hover:not(.dragging) .chair.top    { top: -12px;    }
 .table-node:hover:not(.dragging) .chair.bottom { bottom: -12px; }
-.table-node:hover:not(.dragging) .chair.left   { left: -12px; }
-.table-node:hover:not(.dragging) .chair.right  { right: -12px; }
+.table-node:hover:not(.dragging) .chair.left   { left: -12px;   }
+.table-node:hover:not(.dragging) .chair.right  { right: -12px;  }
 
-/* Tarjeta flotante al seleccionar */
 .floating-card {
   position: absolute;
   left: 110%;

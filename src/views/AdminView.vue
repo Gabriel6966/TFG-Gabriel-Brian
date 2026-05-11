@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
@@ -36,12 +36,14 @@ interface Producto {
   price: number
   category: string
   icon: string
+  imageUrl?: string
 }
 
 interface Categoria {
   id: string
   nombre: string
   icono: string
+  imageUrl?: string
 }
 
 interface Zona {
@@ -116,13 +118,18 @@ const mostrarModalEditarFactura = ref(false)
 const mostrarModalDetalleFactura = ref(false)
 
 // ── FORMULARIOS ──
-const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
-const nuevaCategoria = ref({ nombre: '', icono: '🍽️' })
+const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️', imageUrl: '' })
+const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
 const nuevaZona = ref({ nombre: '', icono: '🛋️' })
 const nuevaInvitacion = ref({ email: '', rol: 'camarero' as 'admin' | 'camarero' | 'cocinero' })
 const facturaEditando = ref<Partial<Factura>>({})
 const facturaSeleccionada = ref<Factura | null>(null)
 const nuevoItemSeleccionado = ref('')
+const subiendoFotoProducto = ref(false)
+const subiendoFotoCategoria = ref(false)
+
+const CLOUDINARY_CLOUD = 'dnlcwm5x9'
+const CLOUDINARY_PRESET = 'easyorder_uploads'
 
 // ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
@@ -369,8 +376,51 @@ const guardarCategoria = async () => {
   if (yaExiste) return alert('Esa categoría ya existe.')
   try {
     await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...nuevaCategoria.value })
-    nuevaCategoria.value = { nombre: '', icono: '🍽️' }
+    nuevaCategoria.value = { nombre: '', icono: '🍽️', imageUrl: '' }
   } catch { alert('Error al crear la categoría.') }
+}
+
+const subirFotoCategoria = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !localId.value) return
+
+  const file = input.files[0]
+  if (!file.type.startsWith('image/')) {
+    input.value = ''
+    return alert('Solo se permiten imágenes.')
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    input.value = ''
+    return alert('La imagen no puede superar 3MB.')
+  }
+
+  subiendoFotoCategoria.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}/categorias`)
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
+      { method: 'POST', body: formData }
+    )
+
+    if (!res.ok) throw new Error('Cloudinary upload failed')
+
+    const data = await res.json()
+    nuevaCategoria.value.imageUrl = data.secure_url || ''
+  } catch (error) {
+    console.error('Error al subir la foto de la categoria:', error)
+    alert('Error al subir la foto de la categoria.')
+  } finally {
+    input.value = ''
+    subiendoFotoCategoria.value = false
+  }
+}
+
+const quitarFotoCategoria = () => {
+  nuevaCategoria.value.imageUrl = ''
 }
 
 const eliminarCategoria = async (id: string, nombre: string) => {
@@ -393,8 +443,51 @@ const guardarProducto = async () => {
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
   try {
     await addDoc(collection(db, `locales/${localId.value}/productos`), { ...nuevoProducto.value })
-    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️' }
+    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️', imageUrl: '' }
   } catch { alert('Error al guardar el producto.') }
+}
+
+const subirFotoProducto = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !localId.value) return
+
+  const file = input.files[0]
+  if (!file.type.startsWith('image/')) {
+    input.value = ''
+    return alert('Solo se permiten imágenes.')
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    input.value = ''
+    return alert('La imagen no puede superar 3MB.')
+  }
+
+  subiendoFotoProducto.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}/productos`)
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
+      { method: 'POST', body: formData }
+    )
+
+    if (!res.ok) throw new Error('Cloudinary upload failed')
+
+    const data = await res.json()
+    nuevoProducto.value.imageUrl = data.secure_url || ''
+  } catch (error) {
+    console.error('Error al subir la foto del producto:', error)
+    alert('Error al subir la foto del producto.')
+  } finally {
+    input.value = ''
+    subiendoFotoProducto.value = false
+  }
+}
+
+const quitarFotoProducto = () => {
+  nuevoProducto.value.imageUrl = ''
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
@@ -748,15 +841,30 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
               </div>
               <div class="field-group">
                 <label>Icono</label>
-                <div class="emoji-selector-container">
-                  <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
-                    <span class="emoji-preview">{{ nuevoProducto.icon }}</span>
-                    <span>Cambiar icono</span>
-                  </button>
-                  <div v-if="mostrarSelectorProducto" class="picker-popup">
-                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
+                <div class="producto-media-controls">
+                  <div class="emoji-selector-container">
+                    <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
+                      <span class="emoji-preview">{{ nuevoProducto.icon }}</span>
+                      <span>Cambiar icono</span>
+                    </button>
+                    <div v-if="mostrarSelectorProducto" class="picker-popup">
+                      <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
+                    </div>
                   </div>
+
+                  <label class="btn-upload-photo" :class="{ loading: subiendoFotoProducto }">
+                    <input type="file" accept="image/*" @change="subirFotoProducto">
+                    <span>{{ subiendoFotoProducto ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                  </label>
                 </div>
+
+                <div v-if="nuevoProducto.imageUrl" class="producto-photo-preview">
+                  <img :src="nuevoProducto.imageUrl" alt="Vista previa del producto">
+                  <button type="button" class="btn-remove-photo" @click="quitarFotoProducto">
+                    Quitar foto
+                  </button>
+                </div>
+                <p v-else class="field-hint">Opcional. Se guardará junto al producto para usarla luego en el menú o la app.</p>
               </div>
               <button @click="guardarProducto" class="btn-primary btn-full">+ Guardar en el Menú</button>
             </div>
@@ -773,7 +881,10 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
               <div v-for="p in platos" :key="p.id" class="item-row">
-                <span class="item-icon">{{ p.icon }}</span>
+                <div class="producto-visual">
+                  <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="producto-thumb">
+                  <span v-else class="item-icon">{{ p.icon }}</span>
+                </div>
                 <div class="item-info">
                   <span class="item-name">{{ p.name }}</span>
                 </div>
@@ -1082,15 +1193,30 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                   </div>
                   <div class="field-group">
                     <label>Icono</label>
-                    <div class="emoji-selector-container">
-                      <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
-                        <span class="emoji-preview">{{ nuevaCategoria.icono }}</span>
-                        <span>Cambiar</span>
-                      </button>
-                      <div v-if="mostrarSelectorCategoria" class="picker-popup">
-                        <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                    <div class="producto-media-controls">
+                      <div class="emoji-selector-container">
+                        <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
+                          <span class="emoji-preview">{{ nuevaCategoria.icono }}</span>
+                          <span>Cambiar</span>
+                        </button>
+                        <div v-if="mostrarSelectorCategoria" class="picker-popup">
+                          <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                        </div>
                       </div>
+
+                      <label class="btn-upload-photo" :class="{ loading: subiendoFotoCategoria }">
+                        <input type="file" accept="image/*" @change="subirFotoCategoria">
+                        <span>{{ subiendoFotoCategoria ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                      </label>
                     </div>
+
+                    <div v-if="nuevaCategoria.imageUrl" class="producto-photo-preview">
+                      <img :src="nuevaCategoria.imageUrl" alt="Vista previa de la categoria">
+                      <button type="button" class="btn-remove-photo" @click="quitarFotoCategoria">
+                        Quitar foto
+                      </button>
+                    </div>
+                    <p v-else class="field-hint">Opcional. Puedes guardar una imagen representativa de la categoría.</p>
                   </div>
                   <button @click="guardarCategoria" class="btn-primary btn-full">+ Añadir Categoría</button>
                 </div>
@@ -1099,7 +1225,10 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
                 <h3 class="form-card-title">Categorías actuales</h3>
                 <div v-if="categorias.length === 0" class="empty-state-box">No hay categorías todavía.</div>
                 <div v-for="cat in categorias" :key="cat.id" class="item-row">
-                  <span class="item-icon">{{ cat.icono }}</span>
+                  <div class="producto-visual">
+                    <img v-if="cat.imageUrl" :src="cat.imageUrl" :alt="cat.nombre" class="producto-thumb">
+                    <span v-else class="item-icon">{{ cat.icono }}</span>
+                  </div>
                   <div class="item-info">
                     <span class="item-name">{{ cat.nombre }}</span>
                     <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
@@ -1604,6 +1733,11 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
   color: #475569;
 }
 
+.field-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
 .field-group input,
 .field-group select {
   padding: 10px 12px;
@@ -1641,6 +1775,25 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 .item-row:last-child { border-bottom: none; }
 
 .item-icon { font-size: 1.5rem; flex-shrink: 0; }
+
+.producto-visual {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.producto-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 
 .item-info {
   flex: 1;
@@ -1804,6 +1957,77 @@ const onSelectEmojiZona = (e: any) => { nuevaZona.value.icono = e.i; mostrarSele
 
 .btn-emoji:hover { background: #f1f5f9; border-color: #cbd5e1; }
 .emoji-preview { font-size: 1.4rem; line-height: 1; }
+
+.producto-media-controls {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.btn-upload-photo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 14px;
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px dashed #fdba74;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 700;
+  transition: all 0.2s;
+}
+
+.btn-upload-photo:hover {
+  background: #ffedd5;
+  border-color: #fb923c;
+}
+
+.btn-upload-photo.loading {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.btn-upload-photo input {
+  display: none;
+}
+
+.producto-photo-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  margin-top: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.producto-photo-preview img {
+  width: 68px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+}
+
+.btn-remove-photo {
+  border: none;
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-remove-photo:hover {
+  background: #fecaca;
+}
 
 .picker-popup {
   position: absolute;
