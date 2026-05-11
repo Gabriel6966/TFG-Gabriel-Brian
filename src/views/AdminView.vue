@@ -19,6 +19,17 @@ interface Mesa {
   zona?: string
 }
 
+interface Factura {
+  id: string
+  mesa: number
+  zona: string
+  camareroEmail: string
+  fechaApertura?: any
+  fechaCierre: any
+  total: number
+  items: any[]
+}
+
 interface Producto {
   id: string
   name: string
@@ -68,6 +79,7 @@ const categorias = ref<Categoria[]>([])
 const zonas = ref<Zona[]>([])
 const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
+const facturas = ref<Factura[]>([])
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
@@ -101,6 +113,7 @@ let unsubscribeCategorias: (() => void) | null = null
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeInvitaciones: (() => void) | null = null
 let unsubscribeEmpleados: (() => void) | null = null
+let unsubscribeFacturas: (() => void) | null = null
 
 onMounted(() => {
   if (!localId.value) return
@@ -168,6 +181,15 @@ onMounted(() => {
       .map(d => ({ id: d.id, ...d.data() } as Empleado))
       .filter(u => u.localId === localId.value)
   })
+
+  // Listener de Registro Histórico (Facturas)
+  const qFacturas = query(
+    collection(db, `locales/${localId.value}/facturas`),
+    orderBy('fechaCierre', 'desc')
+  )
+  unsubscribeFacturas = onSnapshot(qFacturas, (snapshot) => {
+    facturas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Factura[]
+  })
 })
 
 onUnmounted(() => {
@@ -177,7 +199,20 @@ onUnmounted(() => {
   unsubscribeZonas?.()
   unsubscribeInvitaciones?.()
   unsubscribeEmpleados?.()
+  unsubscribeFacturas?.()
 })
+
+const handleLogout = async () => {
+  // Detenemos los listeners de Firebase ANTES de cerrar sesión
+  unsubscribeMesas?.()
+  unsubscribeProductos?.()
+  unsubscribeCategorias?.()
+  unsubscribeZonas?.()
+  unsubscribeInvitaciones?.()
+  unsubscribeEmpleados?.()
+  unsubscribeFacturas?.()
+  await logout()
+}
 
 // Productos agrupados por categoría
 const productosPorCategoria = computed(() => {
@@ -467,11 +502,14 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
         <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">
           👥 Empleados
         </button>
+        <button :class="{ active: currentTab === 'registro' }" @click="currentTab = 'registro'">
+          🧾 Registro
+        </button>
       </nav>
 
       <div class="sidebar-footer">
         <div class="local-info">🏢 {{ localId }}</div>
-        <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
+        <button class="btn-logout" @click="handleLogout">⬅ Cerrar sesión</button>
       </div>
     </aside>
 
@@ -819,6 +857,45 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
             </div>
           </div>
 
+        </div>
+      </div>
+
+      <!-- ── TAB: REGISTRO (HISTORIAL) ── -->
+      <div v-if="currentTab === 'registro'">
+        <div class="page-header">
+          <div>
+            <h1>Registro de Servicios</h1>
+            <p class="page-subtitle">{{ facturas.length }} tickets cerrados</p>
+          </div>
+        </div>
+
+        <div class="productos-lista">
+          <h3>Historial de Tickets</h3>
+          <div v-if="facturas.length === 0" class="empty-productos">
+            No hay facturas registradas todavía.
+          </div>
+          <div v-for="factura in facturas" :key="factura.id" class="factura-row">
+            <div class="factura-info">
+              <span class="factura-fecha">
+                🔴 Cerrada: {{ factura.fechaCierre?.toDate ? factura.fechaCierre.toDate().toLocaleString() : 'Desconocida' }}
+              </span>
+              <span class="factura-fecha-apertura" v-if="factura.fechaApertura">
+                🟢 Abierta: {{ factura.fechaApertura?.toDate ? factura.fechaApertura.toDate().toLocaleString() : 'Desconocida' }}
+              </span>
+              <span class="factura-mesa">Mesa {{ factura.mesa }} ({{ factura.zona }})</span>
+              <span class="factura-camarero">🧑‍🍳 Atendido por: {{ factura.camareroEmail }}</span>
+            </div>
+            <div class="factura-items">
+              <ul>
+                <li v-for="(item, idx) in factura.items" :key="idx">
+                  {{ item.quantity }}x {{ item.name }} ({{ item.price }}€)
+                </li>
+              </ul>
+            </div>
+            <div class="factura-total">
+              <span class="total-text">{{ factura.total.toFixed(2) }}€</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1610,6 +1687,76 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   transition: 0.2s;
   padding: 4px 8px;
   border-radius: 6px;
+}
+
+/* ── REGISTRO / FACTURAS ── */
+.factura-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 16px;
+  border-bottom: 1px solid #f1f5f9;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.factura-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.factura-fecha {
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+
+.factura-fecha-apertura {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.factura-mesa {
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.factura-camarero {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.factura-items {
+  flex: 2;
+  font-size: 0.85rem;
+  color: #475569;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.factura-items ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.factura-items li {
+  margin-bottom: 2px;
+}
+
+.factura-total {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #10b981;
+  text-align: right;
+  min-width: 80px;
 }
 
 .btn-icon-text:hover {

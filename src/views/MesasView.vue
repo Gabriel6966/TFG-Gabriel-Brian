@@ -37,7 +37,7 @@ const filtroActivo = ref('todas')
 
 // Estado Modal Ticket
 const mostrarModalTicket = ref(false)
-const mesaIdTicket = ref<string | null>(null)
+const mesaIdTicket = ref<string>('')
 
 // Estado Monitor Cliente
 const mostrarModalMonitor = ref(false)
@@ -203,7 +203,7 @@ const marcarComoEntregada = async (comandaId: string, mesaId: string) => {
 // --- LÓGICA DEL TICKET / FACTURA ---
 const abrirModalFactura = () => {
   // Si ya hay una mesa seleccionada, la ponemos por defecto en el ticket
-  mesaIdTicket.value = mesaSeleccionadaId.value || null
+  mesaIdTicket.value = mesaSeleccionadaId.value || ''
   mostrarModalTicket.value = true
 }
 
@@ -215,20 +215,24 @@ const guardarCopiaYFinalizar = async () => {
   if (mesaALiberar.status === 'available') return alert('Esta mesa ya está libre.')
 
   try {
-    // 1. Guardamos el ticket en LocalStorage (Facturas Históricas) para el Admin
-    const historicoKey = `facturas_${localId.value}`
-    const facturas = JSON.parse(localStorage.getItem(historicoKey) || '[]')
+    // Calculamos a qué hora se abrió la mesa basándonos en su primera comanda
+    const comandasDeLaMesa = comandasActivas.value.filter(c => c.mesaId === mesaALiberar.id)
+    let fechaApertura = Timestamp.now()
+    if (comandasDeLaMesa.length > 0) {
+      const timestamps = comandasDeLaMesa.map(c => c.fechaHora?.seconds || Timestamp.now().seconds)
+      fechaApertura = new Timestamp(Math.min(...timestamps), 0)
+    }
 
-    facturas.push({
-      id: Date.now().toString(),
+    // 1. Guardamos el ticket en Firebase para el historial del Admin
+    await addDoc(collection(db, `locales/${localId.value}/facturas`), {
       mesa: mesaALiberar.nr,
       zona: mesaALiberar.zona || 'Sin zona',
-      fecha: new Date().toLocaleString(),
+      camareroEmail: currentUser.value?.email || 'Desconocido',
+      fechaApertura: fechaApertura,
+      fechaCierre: Timestamp.now(),
       total: cartStore.totalPrice,
-      items: cartStore.items.length > 0 ? cartStore.items : [{ name: 'Consumo genérico', price: 0, quantity: 1 }] // Mock por si el carrito está vacío al cobrar
+      items: cartStore.items.length > 0 ? cartStore.items : [{ name: 'Consumo genérico', price: 0, quantity: 1 }]
     })
-
-    localStorage.setItem(historicoKey, JSON.stringify(facturas))
 
     // 2. Liberamos la mesa en Firebase
     await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaALiberar.id), {
@@ -241,6 +245,7 @@ const guardarCopiaYFinalizar = async () => {
       mesaSeleccionadaId.value = null
     }
 
+    mesaIdTicket.value = ''
     mostrarModalTicket.value = false
     alert('Ticket guardado en el sistema y mesa liberada con éxito.')
 
@@ -302,7 +307,7 @@ const enviarPedido = async () => {
         :filtro-activo="filtroActivo" 
         :zonas="zonas" 
         :zona-activa="zonaActiva" 
-        @logout="logout" @cambiar-filtro="(f) => filtroActivo = f"
+        @logout="handleLogout" @cambiar-filtro="(f) => filtroActivo = f"
         @cambiar-zona="(z) => zonaActiva = z"
         @abrir-modal-monitor="mostrarModalMonitor = true"
         @abrir-modal-factura="abrirModalFactura" />
@@ -372,7 +377,7 @@ const enviarPedido = async () => {
             <div class="ticket-input-group">
               <label style="flex: 1;">MESA A COBRAR:</label>
               <select v-model="mesaIdTicket" class="ticket-input select-mesa">
-                <option :value="null" disabled>Elige...</option>
+                <option value="" disabled>Elige...</option>
                 <option v-for="m in mesasOcupadasTodas" :key="m.id" :value="m.id">
                   Mesa {{ m.nr }} ({{ m.zona || 'Sin zona' }})
                 </option>
