@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
-  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc, getDoc
+  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
@@ -146,9 +146,6 @@ const configEditando = ref({
 })
 const subiendoLogo = ref(false)
 const guardandoConfig = ref(false)
-
-const CLOUDINARY_CLOUD = 'dnlcwm5x9'
-const CLOUDINARY_PRESET = 'easyorder_uploads'
 
 const COLORES_PRESET = [
   '#4f46e5', '#dc2626', '#16a34a', '#d97706',
@@ -373,6 +370,10 @@ const subirLogo = async (e: Event) => {
     subiendoLogo.value = false
   }
 }
+
+void COLORES_PRESET
+void guardarConfig
+void subirLogo
 
 // ── ACCIONES: MAPA ──
 const handleUpdatePosition = (id: string, x: number, y: number) => {
