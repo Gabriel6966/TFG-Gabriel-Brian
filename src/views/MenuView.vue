@@ -15,7 +15,7 @@ const categorias = ['Burgers', 'Drinks', 'Desserts']
 
 onMounted(() => {
   const q = query(collection(db, 'productos'))
-  const numeroMesa = Number(route.params.id) 
+  const numeroMesa = Number(route.params.id)
   cartStore.setTable(numeroMesa)
 
   onSnapshot(q, (snapshot) => {
@@ -31,7 +31,7 @@ const productosFiltrados = computed(() => {
 })
 
 const addToCart = (producto: any) => {
-  console.log(`Añadido al carrito de Pinia: ${producto.name}`)
+  console.log(`Anadido al carrito de Pinia: ${producto.name}`)
   cartStore.addToCart(producto)
 }
 </script>
@@ -41,8 +41,12 @@ const addToCart = (producto: any) => {
     <header class="menu-header">
       <h1>Mesa {{ mesaId }}</h1>
       <div class="categories-nav">
-        <button v-for="cat in categorias" :key="cat" :class="{ active: categoriaActual === cat }"
-          @click="categoriaActual = cat">
+        <button
+          v-for="cat in categorias"
+          :key="cat"
+          :class="{ active: categoriaActual === cat }"
+          @click="categoriaActual = cat"
+        >
           {{ cat }}
         </button>
       </div>
@@ -50,7 +54,10 @@ const addToCart = (producto: any) => {
 
     <main class="products-grid">
       <div v-for="item in productosFiltrados" :key="item.id" class="product-card">
-        <span class="product-icon">{{ item.icon }}</span>
+        <div class="product-visual">
+          <img v-if="item.imageUrl" :src="item.imageUrl" :alt="item.name" class="product-photo">
+          <span v-else class="product-icon">{{ item.icon }}</span>
+        </div>
         <div class="product-info">
           <h3>{{ item.name }}</h3>
           <p class="price">{{ item.price }}€</p>
@@ -107,6 +114,25 @@ const addToCart = (producto: any) => {
   align-items: center;
   gap: 15px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+}
+
+.product-visual {
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.product-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .product-icon {

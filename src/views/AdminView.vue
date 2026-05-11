@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
@@ -20,18 +20,31 @@ interface Mesa {
   zona?: string
 }
 
+interface Factura {
+  id: string
+  mesa: number
+  zona: string
+  camareroEmail: string
+  fechaApertura?: any
+  fechaCierre: any
+  total: number
+  items: any[]
+}
+
 interface Producto {
   id: string
   name: string
   price: number
   category: string
   icon: string
+  imageUrl?: string
 }
 
 interface Categoria {
   id: string
   nombre: string
   icono: string
+  imageUrl?: string
 }
 
 interface Zona {
@@ -84,6 +97,8 @@ const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
 const facturas = ref<Factura[]>([])
 
+
+
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
@@ -105,13 +120,18 @@ const mostrarModalEditarFactura = ref(false)
 const mostrarModalDetalleFactura = ref(false)
 
 // ── FORMULARIOS ──
-const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️' })
-const nuevaCategoria = ref({ nombre: '', icono: '🍽️' })
+const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️', imageUrl: '' })
+const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
 const nuevaZona = ref({ nombre: '', icono: '🛋️' })
 const nuevaInvitacion = ref({ email: '', rol: 'camarero' as 'admin' | 'camarero' | 'cocinero' })
 const facturaEditando = ref<Partial<Factura>>({})
 const facturaSeleccionada = ref<Factura | null>(null)
 const nuevoItemSeleccionado = ref('')
+const subiendoFotoProducto = ref(false)
+const subiendoFotoCategoria = ref(false)
+
+const CLOUDINARY_CLOUD = 'dnlcwm5x9'
+const CLOUDINARY_PRESET = 'easyorder_uploads'
 
 // ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
@@ -167,7 +187,28 @@ const facturasFiltradas = computed(() => {
     const matchPago = filtroFPago.value === 'todos' || f.metodoPago === filtroFPago.value
     return matchEmp && matchPago
   })
+
+  // Listener de Registro Histórico (Facturas)
+  const qFacturas = query(
+    collection(db, `locales/${localId.value}/facturas`),
+    orderBy('fechaCierre', 'desc')
+  )
+  unsubscribeFacturas = onSnapshot(qFacturas, (snapshot) => {
+    facturas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Factura[]
+  })
 })
+
+const handleLogout = async () => {
+  // Detenemos los listeners de Firebase ANTES de cerrar sesión
+  unsubscribeMesas?.()
+  unsubscribeProductos?.()
+  unsubscribeCategorias?.()
+  unsubscribeZonas?.()
+  unsubscribeInvitaciones?.()
+  unsubscribeEmpleados?.()
+  unsubscribeFacturas?.()
+  await logout()
+}
 
 const empleadosConVentasDia = computed(() =>
   Array.from(new Set(facturas.value.map(f => f.usuarioNombre))).sort()
@@ -403,8 +444,51 @@ const guardarCategoria = async () => {
   if (yaExiste) return alert('Esa categoría ya existe.')
   try {
     await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...nuevaCategoria.value })
-    nuevaCategoria.value = { nombre: '', icono: '🍽️' }
+    nuevaCategoria.value = { nombre: '', icono: '🍽️', imageUrl: '' }
   } catch { alert('Error al crear la categoría.') }
+}
+
+const subirFotoCategoria = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !localId.value) return
+
+  const file = input.files[0]
+  if (!file.type.startsWith('image/')) {
+    input.value = ''
+    return alert('Solo se permiten imágenes.')
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    input.value = ''
+    return alert('La imagen no puede superar 3MB.')
+  }
+
+  subiendoFotoCategoria.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}/categorias`)
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
+      { method: 'POST', body: formData }
+    )
+
+    if (!res.ok) throw new Error('Cloudinary upload failed')
+
+    const data = await res.json()
+    nuevaCategoria.value.imageUrl = data.secure_url || ''
+  } catch (error) {
+    console.error('Error al subir la foto de la categoria:', error)
+    alert('Error al subir la foto de la categoria.')
+  } finally {
+    input.value = ''
+    subiendoFotoCategoria.value = false
+  }
+}
+
+const quitarFotoCategoria = () => {
+  nuevaCategoria.value.imageUrl = ''
 }
 
 const eliminarCategoria = async (id: string, nombre: string) => {
@@ -427,8 +511,51 @@ const guardarProducto = async () => {
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
   try {
     await addDoc(collection(db, `locales/${localId.value}/productos`), { ...nuevoProducto.value })
-    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️' }
+    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️', imageUrl: '' }
   } catch { alert('Error al guardar el producto.') }
+}
+
+const subirFotoProducto = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !localId.value) return
+
+  const file = input.files[0]
+  if (!file.type.startsWith('image/')) {
+    input.value = ''
+    return alert('Solo se permiten imágenes.')
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    input.value = ''
+    return alert('La imagen no puede superar 3MB.')
+  }
+
+  subiendoFotoProducto.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}/productos`)
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
+      { method: 'POST', body: formData }
+    )
+
+    if (!res.ok) throw new Error('Cloudinary upload failed')
+
+    const data = await res.json()
+    nuevoProducto.value.imageUrl = data.secure_url || ''
+  } catch (error) {
+    console.error('Error al subir la foto del producto:', error)
+    alert('Error al subir la foto del producto.')
+  } finally {
+    input.value = ''
+    subiendoFotoProducto.value = false
+  }
+}
+
+const quitarFotoProducto = () => {
+  nuevoProducto.value.imageUrl = ''
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
@@ -585,13 +712,12 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">🪑 Sala</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
         <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">👥 Empleados</button>
-        <button :class="{ active: currentTab === 'negocio' }" @click="currentTab = 'negocio'">🏢 Mi Negocio</button>
+        <button :class="{ active: currentTab === 'registro' }" @click="currentTab = 'registro'">🧾 Registro</button>
       </nav>
 
       <div class="sidebar-footer">
         <div class="local-info">🏢 {{ localId }}</div>
-        <div class="powered-by">powered by EasyOrder</div>
-        <button class="btn-logout" @click="logout">⬅ Cerrar sesión</button>
+        <button class="btn-logout" @click="handleLogout">⬅ Cerrar sesión</button>
       </div>
     </aside>
 
@@ -794,15 +920,30 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
               </div>
               <div class="field-group">
                 <label>Icono</label>
-                <div class="emoji-selector-container">
-                  <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
-                    <span class="emoji-preview">{{ nuevoProducto.icon }}</span>
-                    <span>Cambiar icono</span>
-                  </button>
-                  <div v-if="mostrarSelectorProducto" class="picker-popup">
-                    <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
+                <div class="producto-media-controls">
+                  <div class="emoji-selector-container">
+                    <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
+                      <span class="emoji-preview">{{ nuevoProducto.icon }}</span>
+                      <span>Cambiar icono</span>
+                    </button>
+                    <div v-if="mostrarSelectorProducto" class="picker-popup">
+                      <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
+                    </div>
                   </div>
+
+                  <label class="btn-upload-photo" :class="{ loading: subiendoFotoProducto }">
+                    <input type="file" accept="image/*" @change="subirFotoProducto">
+                    <span>{{ subiendoFotoProducto ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                  </label>
                 </div>
+
+                <div v-if="nuevoProducto.imageUrl" class="producto-photo-preview">
+                  <img :src="nuevoProducto.imageUrl" alt="Vista previa del producto">
+                  <button type="button" class="btn-remove-photo" @click="quitarFotoProducto">
+                    Quitar foto
+                  </button>
+                </div>
+                <p v-else class="field-hint">Opcional. Se guardará junto al producto para usarla luego en el menú o la app.</p>
               </div>
               <button @click="guardarProducto" class="btn-primary btn-full">+ Guardar en el Menú</button>
             </div>
@@ -818,7 +959,10 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
               <div v-for="p in platos" :key="p.id" class="item-row">
-                <span class="item-icon">{{ p.icon }}</span>
+                <div class="producto-visual">
+                  <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="producto-thumb">
+                  <span v-else class="item-icon">{{ p.icon }}</span>
+                </div>
                 <div class="item-info">
                   <span class="item-name">{{ p.name }}</span>
                 </div>
@@ -921,146 +1065,42 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         </div>
       </div>
 
-      <!-- ══ TAB: MI NEGOCIO ══ -->
-      <div v-if="currentTab === 'negocio'">
+      <!-- ── TAB: REGISTRO (HISTORIAL) ── -->
+      <div v-if="currentTab === 'registro'">
         <div class="page-header">
           <div>
-            <h1>Identidad del Negocio</h1>
-            <p class="page-subtitle">Personaliza cómo aparece tu negocio en EasyOrder</p>
+            <h1>Registro de Servicios</h1>
+            <p class="page-subtitle">{{ facturas.length }} tickets cerrados</p>
           </div>
         </div>
 
-        <div class="dos-columnas">
-
-          <!-- Formulario -->
-          <div class="form-card">
-            <h3 class="form-card-title">⚙️ Configuración</h3>
-            <div class="form-fields">
-
-              <!-- Nombre -->
-              <div class="field-group">
-                <label>Nombre del negocio</label>
-                <input v-model="configEditando.nombreNegocio" placeholder="Ej: Bar Scarlatti" />
-              </div>
-
-              <!-- Logo -->
-              <div class="field-group">
-                <label>Logo del negocio</label>
-                <div class="logo-upload-area">
-                  <img
-                    v-if="configEditando.logoUrl"
-                    :src="configEditando.logoUrl"
-                    class="logo-preview"
-                    alt="Logo"
-                  />
-                  <div v-else class="logo-placeholder">
-                    <span>Sin logo</span>
-                  </div>
-                  <label class="btn-upload-logo" :class="{ loading: subiendoLogo }">
-                    {{ subiendoLogo ? 'Subiendo...' : '📤 Subir imagen' }}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style="display: none"
-                      @change="subirLogo"
-                      :disabled="subiendoLogo"
-                    />
-                  </label>
-                  <p class="upload-hint">PNG, JPG o SVG · Máx 2MB</p>
-                </div>
-              </div>
-
-              <!-- Color de acento -->
-              <div class="field-group">
-                <label>Color principal</label>
-                <div class="color-picker-row">
-                  <input type="color" v-model="configEditando.colorAcento" class="color-input" />
-                  <span class="color-value">{{ configEditando.colorAcento }}</span>
-                  <div class="color-preview-pill" :style="{ background: configEditando.colorAcento }">Aa</div>
-                </div>
-                <div class="color-presets">
-                  <button
-                    v-for="color in COLORES_PRESET"
-                    :key="color"
-                    class="color-preset-btn"
-                    :style="{ background: color }"
-                    :class="{ active: configEditando.colorAcento === color }"
-                    @click="configEditando.colorAcento = color"
-                    :title="color"
-                  />
-                </div>
-              </div>
-
-              <button class="btn-primary btn-full" @click="guardarConfig" :disabled="guardandoConfig">
-                {{ guardandoConfig ? 'Guardando...' : '✓ Guardar configuración' }}
-              </button>
+        <div class="productos-lista">
+          <h3>Historial de Tickets</h3>
+          <div v-if="facturas.length === 0" class="empty-productos">
+            No hay facturas registradas todavía.
+          </div>
+          <div v-for="factura in facturas" :key="factura.id" class="factura-row">
+            <div class="factura-info">
+              <span class="factura-fecha">
+                🔴 Cerrada: {{ factura.fechaCierre?.toDate ? factura.fechaCierre.toDate().toLocaleString() : 'Desconocida' }}
+              </span>
+              <span class="factura-fecha-apertura" v-if="factura.fechaApertura">
+                🟢 Abierta: {{ factura.fechaApertura?.toDate ? factura.fechaApertura.toDate().toLocaleString() : 'Desconocida' }}
+              </span>
+              <span class="factura-mesa">Mesa {{ factura.mesa }} ({{ factura.zona }})</span>
+              <span class="factura-camarero">🧑‍🍳 Atendido por: {{ factura.camareroEmail }}</span>
+            </div>
+            <div class="factura-items">
+              <ul>
+                <li v-for="(item, idx) in factura.items" :key="idx">
+                  {{ item.quantity }}x {{ item.name }} ({{ item.price }}€)
+                </li>
+              </ul>
+            </div>
+            <div class="factura-total">
+              <span class="total-text">{{ factura.total.toFixed(2) }}€</span>
             </div>
           </div>
-
-          <!-- Preview -->
-          <div class="lista-card">
-            <h3 class="form-card-title">👁 Vista previa</h3>
-            <p class="form-hint" style="margin-bottom: 20px;">
-              Así verán tu negocio los empleados en la aplicación.
-            </p>
-
-            <!-- Preview sidebar camarero -->
-            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 8px;">
-              Sidebar camarero
-            </p>
-            <div class="preview-sidebar">
-              <div class="preview-brand" :style="{ borderBottomColor: configEditando.colorAcento }">
-                <img
-                  v-if="configEditando.logoUrl"
-                  :src="configEditando.logoUrl"
-                  class="preview-logo"
-                  alt="Logo"
-                />
-                <div
-                  v-else
-                  class="preview-logo-placeholder"
-                  :style="{ background: configEditando.colorAcento }"
-                >
-                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
-                </div>
-                <div>
-                  <div class="preview-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</div>
-                  <div class="preview-powered">powered by EasyOrder</div>
-                </div>
-              </div>
-              <div class="preview-nav">
-                <div class="preview-nav-item" :style="{ background: configEditando.colorAcento }">🪑 Sala</div>
-                <div class="preview-nav-item-inactive">📊 Resumen</div>
-                <div class="preview-nav-item-inactive">🔔 Pedidos</div>
-              </div>
-            </div>
-
-            <!-- Preview cocina -->
-            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin: 20px 0 8px;">
-              Barra de cocina
-            </p>
-            <div class="preview-cocina-bar">
-              <div class="preview-cocina-left">
-                <img
-                  v-if="configEditando.logoUrl"
-                  :src="configEditando.logoUrl"
-                  class="preview-logo-sm"
-                  alt="Logo"
-                />
-                <div
-                  v-else
-                  class="preview-logo-sm-placeholder"
-                  :style="{ background: configEditando.colorAcento }"
-                >
-                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
-                </div>
-                <span class="preview-cocina-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</span>
-                <span class="preview-cocina-badge" :style="{ background: configEditando.colorAcento }">EasyOrder</span>
-              </div>
-              <span class="preview-cocina-role">Cocina</span>
-            </div>
-          </div>
-
         </div>
       </div>
 
@@ -1222,15 +1262,30 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                   </div>
                   <div class="field-group">
                     <label>Icono</label>
-                    <div class="emoji-selector-container">
-                      <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
-                        <span class="emoji-preview">{{ nuevaCategoria.icono }}</span>
-                        <span>Cambiar</span>
-                      </button>
-                      <div v-if="mostrarSelectorCategoria" class="picker-popup">
-                        <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                    <div class="producto-media-controls">
+                      <div class="emoji-selector-container">
+                        <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
+                          <span class="emoji-preview">{{ nuevaCategoria.icono }}</span>
+                          <span>Cambiar</span>
+                        </button>
+                        <div v-if="mostrarSelectorCategoria" class="picker-popup">
+                          <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
+                        </div>
                       </div>
+
+                      <label class="btn-upload-photo" :class="{ loading: subiendoFotoCategoria }">
+                        <input type="file" accept="image/*" @change="subirFotoCategoria">
+                        <span>{{ subiendoFotoCategoria ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                      </label>
                     </div>
+
+                    <div v-if="nuevaCategoria.imageUrl" class="producto-photo-preview">
+                      <img :src="nuevaCategoria.imageUrl" alt="Vista previa de la categoria">
+                      <button type="button" class="btn-remove-photo" @click="quitarFotoCategoria">
+                        Quitar foto
+                      </button>
+                    </div>
+                    <p v-else class="field-hint">Opcional. Puedes guardar una imagen representativa de la categoría.</p>
                   </div>
                   <button @click="guardarCategoria" class="btn-primary btn-full">+ Añadir Categoría</button>
                 </div>
@@ -1239,7 +1294,10 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 <h3 class="form-card-title">Categorías actuales</h3>
                 <div v-if="categorias.length === 0" class="empty-state-box">No hay categorías todavía.</div>
                 <div v-for="cat in categorias" :key="cat.id" class="item-row">
-                  <span class="item-icon">{{ cat.icono }}</span>
+                  <div class="producto-visual">
+                    <img v-if="cat.imageUrl" :src="cat.imageUrl" :alt="cat.nombre" class="producto-thumb">
+                    <span v-else class="item-icon">{{ cat.icono }}</span>
+                  </div>
                   <div class="item-info">
                     <span class="item-name">{{ cat.nombre }}</span>
                     <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
@@ -1654,6 +1712,11 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
 .field-group label, .field-label { font-size: 0.82rem; font-weight: 600; color: #475569; }
 
+.field-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
 .field-group input,
 .field-group select {
   padding: 10px 12px;
@@ -1676,8 +1739,43 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .item-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
 .item-row:last-child { border-bottom: none; }
 .item-icon { font-size: 1.5rem; flex-shrink: 0; }
-.item-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.item-name { font-weight: 600; color: #0f172a; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.producto-visual {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.producto-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item-name {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .item-sub { font-size: 0.78rem; color: #94a3b8; }
 .item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
 
@@ -1834,18 +1932,84 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
 .preview-logo { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; }
 
-.preview-logo-placeholder {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
+.producto-media-controls {
   display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.btn-upload-photo {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: white;
-  font-weight: 800;
-  font-size: 1.1rem;
-  flex-shrink: 0;
-  transition: background 0.3s;
+  min-height: 42px;
+  padding: 0 14px;
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px dashed #fdba74;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 700;
+  transition: all 0.2s;
+}
+
+.btn-upload-photo:hover {
+  background: #ffedd5;
+  border-color: #fb923c;
+}
+
+.btn-upload-photo.loading {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.btn-upload-photo input {
+  display: none;
+}
+
+.producto-photo-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  margin-top: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.producto-photo-preview img {
+  width: 68px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+}
+
+.btn-remove-photo {
+  border: none;
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-remove-photo:hover {
+  background: #fecaca;
+}
+
+.picker-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 100;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.12);
+  border-radius: 10px;
 }
 
 .preview-nombre { font-size: 0.9rem; font-weight: 700; color: #0f172a; }
@@ -1955,10 +2119,128 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .t-price-admin{ font-weight: 700; white-space: nowrap; }
 .ticket-total-row { display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 900; color: #0f172a; }
 
-.edit-items-container { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 4px; }
-.edit-items-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; margin: 8px 0; }
-.edit-item-row { display: flex; align-items: center; background: white; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; gap: 10px; }
-.edit-item-name { flex: 1; font-size: 0.88rem; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-total-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+/* ── MODAL EDITAR FACTURA ── */
+.edit-items-container {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 4px;
+}
+
+.edit-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+
+.edit-item-row {
+  display: flex;
+  align-items: center;
+  background: white;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  gap: 10px;
+}
+
+/* ── REGISTRO / FACTURAS ── */
+.factura-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 16px;
+  border-bottom: 1px solid #f1f5f9;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.factura-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.factura-fecha {
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+
+.factura-fecha-apertura {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.factura-mesa {
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.factura-camarero {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.factura-items {
+  flex: 2;
+  font-size: 0.85rem;
+  color: #475569;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.factura-items ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.factura-items li {
+  margin-bottom: 2px;
+}
+
+.factura-total {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #10b981;
+  text-align: right;
+  min-width: 80px;
+}
+
+.btn-icon-text:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* ── MODAL EDITAR ── */
+.edit-item-name {
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .edit-item-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .edit-sep { font-size: 0.8rem; color: #94a3b8; }
 .edit-input-sm { width: 58px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; text-align: center; outline: none; font-size: 0.88rem; }

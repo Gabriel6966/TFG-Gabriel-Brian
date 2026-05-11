@@ -12,6 +12,45 @@ const rememberMe = ref(false)
 const isLoading = ref(false)
 const errorMsg = ref('')
 const showPassword = ref(false)
+const logoShowcaseStyle = ref({
+  '--logo-rotate-x': '16deg',
+  '--logo-rotate-y': '-14deg',
+  '--logo-shift-y': '0px',
+  '--logo-scale': '0.94',
+  '--logo-glow-x': '50%',
+  '--logo-glow-y': '50%',
+})
+
+const resetLogoTilt = () => {
+  logoShowcaseStyle.value = {
+    '--logo-rotate-x': '16deg',
+    '--logo-rotate-y': '-14deg',
+    '--logo-shift-y': '0px',
+    '--logo-scale': '0.94',
+    '--logo-glow-x': '50%',
+    '--logo-glow-y': '50%',
+  }
+}
+
+const handleLogoMouseMove = (event: MouseEvent) => {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+
+  const rect = target.getBoundingClientRect()
+  const px = (event.clientX - rect.left) / rect.width
+  const py = (event.clientY - rect.top) / rect.height
+  const centeredX = px - 0.5
+  const centeredY = py - 0.5
+
+  logoShowcaseStyle.value = {
+    '--logo-rotate-x': `${(-centeredY * 18).toFixed(2)}deg`,
+    '--logo-rotate-y': `${(centeredX * 22).toFixed(2)}deg`,
+    '--logo-shift-y': '-8px',
+    '--logo-scale': '1',
+    '--logo-glow-x': `${(px * 100).toFixed(2)}%`,
+    '--logo-glow-y': `${(py * 100).toFixed(2)}%`,
+  }
+}
 
 const handleLogin = async () => {
   isLoading.value = true
@@ -60,28 +99,33 @@ const handleResetPassword = async () => {
       <div class="mesh-blob blob-3"></div>
 
       <div class="brand-content">
-        <h1 class="logo-text">EasyOrder</h1>
+        <div class="brand-mark">
+          <img
+            src="/EasyOrderLetra-transparent.png"
+            alt="EasyOrder"
+            class="wordmark-image"
+          >
+        </div>
         <p class="subtitle">Gestión inteligente de pedidos en tiempo real</p>
 
-        <div class="mockup-wrapper">
-          <div class="tablet-mockup">
-            <div class="mockup-screen">
-              <div class="mockup-nav">
-                <div class="nav-dot red"></div>
-                <div class="nav-dot yellow"></div>
-                <div class="nav-dot green"></div>
-              </div>
-              <div class="mockup-body">
-                <div class="mockup-sidebar"></div>
-                <div class="mockup-grid">
-                  <div class="mockup-card active-glow"></div>
-                  <div class="mockup-card danger-glow"></div>
-                  <div class="mockup-card"></div>
-                </div>
-              </div>
+        <div
+          class="logo-showcase"
+          :style="logoShowcaseStyle"
+          @mousemove="handleLogoMouseMove"
+          @mouseleave="resetLogoTilt"
+        >
+          <div class="showcase-glow"></div>
+          <div class="showcase-orbit orbit-1"></div>
+          <div class="showcase-orbit orbit-2"></div>
+          <div class="logo-shell">
+            <div class="logo-panel">
+              <img
+                src="/EasyOrderLogo-transparent.png"
+                alt="Logo EasyOrder"
+                class="logo-icon-image"
+              >
             </div>
           </div>
-          <div class="tablet-reflection"></div>
         </div>
       </div>
     </div>
@@ -227,12 +271,20 @@ const handleResetPassword = async () => {
   width: 100%;
 }
 
-.logo-text {
-  font-size: 3.8rem;
-  font-weight: 800;
-  letter-spacing: -1.5px;
-  margin: 0 0 10px 0;
-  text-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+.brand-mark {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+  animation: floatBrand 6s ease-in-out infinite;
+}
+
+.wordmark-image {
+  width: min(100%, 520px);
+  display: block;
+  transition: transform 0.45s ease, filter 0.45s ease;
+  filter:
+    drop-shadow(0 18px 40px rgba(15, 23, 42, 0.28))
+    saturate(1.08);
 }
 
 .subtitle {
@@ -243,105 +295,93 @@ const handleResetPassword = async () => {
   letter-spacing: -0.2px;
 }
 
-.mockup-wrapper {
+.logo-showcase {
   position: relative;
-  width: 85%;
+  width: min(100%, 420px);
   margin: 0 auto;
   perspective: 1000px;
+  cursor: pointer;
 }
 
-.tablet-mockup {
-  background: rgba(255, 255, 255, 0.1);
+.showcase-glow {
+  position: absolute;
+  inset: 16% 10%;
+  background:
+    radial-gradient(circle at var(--logo-glow-x, 50%) var(--logo-glow-y, 50%), rgba(95, 224, 211, 0.44) 0%, rgba(251, 191, 92, 0.3) 36%, rgba(79, 70, 229, 0) 72%);
+  filter: blur(20px);
+  transform: translateZ(0);
+  animation: pulseGlow 5.5s ease-in-out infinite;
+  transition: background-position 0.18s ease;
+}
+
+.showcase-orbit {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.orbit-1 {
+  width: 88%;
+  height: 88%;
+  animation: rotateOrbit 14s linear infinite;
+}
+
+.orbit-2 {
+  width: 72%;
+  height: 72%;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.2);
+  animation: rotateOrbit 10s linear infinite reverse;
+}
+
+.logo-shell {
+  position: relative;
   padding: 12px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.4),
-    0 25px 50px -12px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(0, 0, 0, 0.1);
-  transform: rotateX(15deg) rotateY(-15deg) scale(0.95);
+  transform: rotateX(var(--logo-rotate-x, 16deg)) rotateY(var(--logo-rotate-y, -14deg)) translateY(var(--logo-shift-y, 0px)) scale(var(--logo-scale, 0.94));
   transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-  backdrop-filter: blur(10px);
+  transform-style: preserve-3d;
 }
 
-.mockup-wrapper:hover .tablet-mockup {
-  transform: rotateX(5deg) rotateY(-5deg) scale(1);
+.logo-showcase:hover .logo-shell {
+  filter: drop-shadow(0 32px 44px rgba(15, 23, 42, 0.22));
 }
 
-.mockup-screen {
-  background: #0f172a;
-  height: 260px;
-  border-radius: 16px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
+.logo-showcase:hover .wordmark-image {
+  transform: translateY(-4px) scale(1.015);
+  filter:
+    drop-shadow(0 24px 48px rgba(15, 23, 42, 0.34))
+    saturate(1.12);
 }
 
-.mockup-nav {
-  height: 30px;
-  background: #1e293b;
+.logo-panel {
+  position: relative;
+  padding: 8px;
+  min-height: 300px;
   display: flex;
   align-items: center;
-  padding: 0 15px;
-  gap: 6px;
-  border-bottom: 1px solid #334155;
+  justify-content: center;
+  transform: translateZ(34px);
 }
 
-.nav-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+.logo-icon-image {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 250px);
+  display: block;
+  filter:
+    drop-shadow(0 20px 30px rgba(15, 23, 42, 0.18))
+    saturate(1.08);
+  animation: floatLogo 4.8s ease-in-out infinite;
+  transition: transform 0.35s ease, filter 0.35s ease;
 }
 
-.nav-dot.red {
-  background: #ef4444;
-}
-
-.nav-dot.yellow {
-  background: #eab308;
-}
-
-.nav-dot.green {
-  background: #22c55e;
-}
-
-.mockup-body {
-  display: flex;
-  flex: 1;
-  padding: 15px;
-  gap: 15px;
-}
-
-.mockup-sidebar {
-  width: 60px;
-  background: #1e293b;
-  border-radius: 8px;
-  border: 1px solid #334155;
-}
-
-.mockup-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}
-
-.mockup-card {
-  background: #1e293b;
-  border-radius: 10px;
-  border: 1px solid #334155;
-}
-
-.active-glow {
-  background: rgba(34, 197, 94, 0.1);
-  border-color: rgba(34, 197, 94, 0.4);
-  box-shadow: 0 0 20px rgba(34, 197, 94, 0.15);
-}
-
-.danger-glow {
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.4);
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
+.logo-showcase:hover .logo-icon-image {
+  transform: scale(1.04);
+  filter:
+    drop-shadow(0 26px 44px rgba(15, 23, 42, 0.22))
+    saturate(1.12);
 }
 
 .form-section {
@@ -588,6 +628,48 @@ h2 {
   }
 }
 
+@keyframes rotateOrbit {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes floatBrand {
+  0%, 100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes floatLogo {
+  0%, 100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(0.96);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
 .spinner {
   width: 20px;
   height: 20px;
@@ -613,8 +695,21 @@ h2 {
     padding: 40px 20px;
   }
 
-  .mockup-wrapper {
-    display: none;
+  .subtitle {
+    margin-bottom: 30px;
+  }
+
+  .logo-showcase {
+    width: min(100%, 320px);
+  }
+
+  .logo-panel {
+    min-height: 220px;
+    padding: 8px;
+  }
+
+  .logo-icon-image {
+    width: min(100%, 180px);
   }
 
   .form-section {

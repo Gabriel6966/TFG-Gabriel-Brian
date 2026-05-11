@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
@@ -61,7 +61,7 @@ const mostrarModalMonitor = ref(false)
 const comandasActivas = ref<any[]>([])
 const mesaMonitorSeleccionada = ref<string | null>(null)
 
-// ── NOTIFICACIONES ──
+// â”€â”€ NOTIFICACIONES â”€â”€
 const comandasNotificadas = ref<Set<string>>(new Set())
 const notificaciones = ref<Notificacion[]>([])
 
@@ -129,7 +129,7 @@ const comandasListasCount = computed(() =>
   comandasActivas.value.filter(c => c.estado === 'listo').length
 )
 
-// ── LISTENERS ──
+// â”€â”€ LISTENERS â”€â”€
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
@@ -191,7 +191,7 @@ onMounted(() => {
         notificaciones.value.push({
           id: comanda.id,
           mesaNumero: comanda.mesaNumero || 0,
-          texto: `Mesa ${comanda.mesaNumero || '?'} — Pedido listo para recoger`,
+          texto: `Mesa ${comanda.mesaNumero || '?'} â€” Pedido listo para recoger`,
           comandaId: comanda.id,
           mesaId: comanda.mesaId || ''
         })
@@ -216,7 +216,7 @@ onUnmounted(() => {
   detenerNegocio()
 })
 
-// ── COMPUTED ──
+// â”€â”€ COMPUTED â”€â”€
 
 const cuentaFinalMesa = computed(() => {
   if (!mesaIdTicket.value) return { items: [], total: 0 }
@@ -290,7 +290,7 @@ const productosFiltrados = computed(() =>
   productos.value.filter((p: any) => p.category === categoriaSeleccionada.value)
 )
 
-// ── ACCIONES ──
+// â”€â”€ ACCIONES â”€â”€
 
 const openTable = (table: any) => {
   inicializarAudio()
@@ -346,7 +346,7 @@ const abrirModalFactura = () => {
 const guardarCopiaYFinalizar = async () => {
   if (!mesaIdTicket.value || !localId.value || !currentUser.value) return
   const mesaALiberar = tables.value.find(t => t.id === mesaIdTicket.value)
-  if (!mesaALiberar) return alert('Seleccione una mesa válida.')
+  if (!mesaALiberar) return alert('Seleccione una mesa vÃ¡lida.')
   const consumoTotal = cuentaFinalMesa.value
 
   try {
@@ -385,6 +385,7 @@ const guardarCopiaYFinalizar = async () => {
       mesaSeleccionadaId.value = null
     }
 
+    mesaIdTicket.value = null
     mostrarModalTicket.value = false
     alert('Cobro registrado y mesa liberada.')
   } catch (error) {
@@ -394,7 +395,7 @@ const guardarCopiaYFinalizar = async () => {
 }
 
 const enviarPedido = async () => {
-  if (cartStore.items.length === 0) return alert('El pedido está vacío')
+  if (cartStore.items.length === 0) return alert('El pedido estÃ¡ vacÃ­o')
   if (!mesaSeleccionadaId.value || !currentUser.value || !localId.value) return
 
   isEnviando.value = true
@@ -443,15 +444,15 @@ const enviarPedido = async () => {
 <template>
   <div class="pos-master-layout" @click="inicializarAudio">
 
-    <!-- ── BANNER NOTIFICACIONES ── -->
+    <!-- â”€â”€ BANNER NOTIFICACIONES â”€â”€ -->
     <transition name="banner-slide">
       <div v-if="notificaciones.length > 0" class="notificaciones-banner">
         <div class="banner-content">
-          <span class="banner-icon">🔔</span>
+          <span class="banner-icon">ðŸ””</span>
           <div class="banner-lista">
             <div v-for="notif in notificaciones" :key="notif.id" class="banner-item">
               <span class="banner-texto">{{ notif.texto }}</span>
-              <button class="btn-banner-entregar" @click="descartarNotificacion(notif)">✓ Servido</button>
+              <button class="btn-banner-entregar" @click="descartarNotificacion(notif)">âœ“ Servido</button>
             </div>
           </div>
           <button v-if="notificaciones.length > 1" class="btn-banner-all" @click="descartarTodasNotificaciones">
@@ -463,7 +464,7 @@ const enviarPedido = async () => {
 
     <div class="pos-inner-layout">
 
-      <!-- ── SIDEBAR ── -->
+      <!-- â”€â”€ SIDEBAR â”€â”€ -->
       <aside class="pos-sidebar-container">
         <PosSidebar
           :user-email="currentUser?.email ?? undefined"
@@ -481,7 +482,7 @@ const enviarPedido = async () => {
         />
       </aside>
 
-      <!-- ── CENTRO ── -->
+      <!-- â”€â”€ CENTRO â”€â”€ -->
       <main class="pos-center-container">
         <header class="map-header">
           <div class="header-spacer"></div>
@@ -517,7 +518,7 @@ const enviarPedido = async () => {
             <div v-if="mesaSeleccionada" class="menu-overlay-panel">
               <div class="menu-header">
                 <h3>Comandar Mesa {{ mesaSeleccionada }}</h3>
-                <button class="btn-close-menu" @click="openTable({ nr: mesaSeleccionada })">✕ Cerrar</button>
+                <button class="btn-close-menu" @click="openTable({ nr: mesaSeleccionada })">âœ• Cerrar</button>
               </div>
               <nav class="categories-tabs">
                 <button
@@ -537,10 +538,13 @@ const enviarPedido = async () => {
                   class="product-card"
                   @click="cartStore.addToCart(p)"
                 >
-                  <div class="product-img">{{ p.icon || '🍔' }}</div>
+                  <div class="product-media">
+                    <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="product-photo">
+                    <div v-else class="product-img">{{ p.icon || 'ðŸ”' }}</div>
+                  </div>
                   <div class="product-info">
                     <h4>{{ p.name }}</h4>
-                    <p class="price" :style="{ color: negocio.colorAcento || '#4f46e5' }">{{ p.price }}€</p>
+                    <p class="price" :style="{ color: negocio.colorAcento || '#4f46e5' }">{{ p.price }}â‚¬</p>
                   </div>
                 </div>
               </div>
@@ -549,7 +553,7 @@ const enviarPedido = async () => {
         </div>
       </main>
 
-      <!-- ── PANEL PEDIDO ── -->
+      <!-- â”€â”€ PANEL PEDIDO â”€â”€ -->
       <aside class="pos-order-container">
         <PosOrderPanel
           :mesa-seleccionada="mesaSeleccionada"
@@ -559,7 +563,7 @@ const enviarPedido = async () => {
       </aside>
     </div>
 
-    <!-- ── MODAL TICKET ── -->
+    <!-- â”€â”€ MODAL TICKET â”€â”€ -->
     <transition name="fade">
       <div v-if="mostrarModalTicket" class="modal-backdrop" @click.self="mostrarModalTicket = false">
         <div class="ticket-modal">
@@ -571,7 +575,7 @@ const enviarPedido = async () => {
             <div class="ticket-input-group">
               <label style="flex: 1;">MESA A COBRAR:</label>
               <select v-model="mesaIdTicket" class="ticket-input select-mesa">
-                <option :value="null" disabled>Elige...</option>
+                <option value="" disabled>Elige...</option>
                 <option v-for="m in mesasOcupadasTodas" :key="m.id" :value="m.id">
                   Mesa {{ m.nr }} ({{ m.zona || 'Sin zona' }})
                 </option>
@@ -580,20 +584,20 @@ const enviarPedido = async () => {
 
             <div class="ticket-divider"></div>
             <div class="metodo-pago-group">
-              <label class="metodo-label">MÉTODO DE PAGO:</label>
+              <label class="metodo-label">MÃ‰TODO DE PAGO:</label>
               <div class="metodo-btns">
                 <button
                   class="btn-metodo"
                   :class="{ active: metodoPago === 'efectivo' }"
                   :style="metodoPago === 'efectivo' ? { borderColor: negocio.colorAcento, background: `${negocio.colorAcento}15`, color: negocio.colorAcento } : {}"
                   @click="metodoPago = 'efectivo'"
-                >💵 Efectivo</button>
+                >ðŸ’µ Efectivo</button>
                 <button
                   class="btn-metodo"
                   :class="{ active: metodoPago === 'tarjeta' }"
                   :style="metodoPago === 'tarjeta' ? { borderColor: negocio.colorAcento, background: `${negocio.colorAcento}15`, color: negocio.colorAcento } : {}"
                   @click="metodoPago = 'tarjeta'"
-                >💳 Tarjeta</button>
+                >ðŸ’³ Tarjeta</button>
               </div>
             </div>
 
@@ -603,7 +607,7 @@ const enviarPedido = async () => {
               <div v-for="item in cuentaFinalMesa.items" :key="item.productoId" class="t-item">
                 <span class="t-qty">{{ item.cantidad }}x</span>
                 <span class="t-name">{{ item.nombre }}</span>
-                <span class="t-price">{{ (item.precio * item.cantidad).toFixed(2) }}€</span>
+                <span class="t-price">{{ (item.precio * item.cantidad).toFixed(2) }}â‚¬</span>
               </div>
             </div>
             <div v-else class="ticket-empty">(La mesa no tiene consumo registrado)</div>
@@ -612,7 +616,7 @@ const enviarPedido = async () => {
 
             <div class="ticket-total">
               <span>TOTAL</span>
-              <span>{{ cuentaFinalMesa.total.toFixed(2) }}€</span>
+              <span>{{ cuentaFinalMesa.total.toFixed(2) }}â‚¬</span>
             </div>
           </div>
 
@@ -624,19 +628,19 @@ const enviarPedido = async () => {
               @click="guardarCopiaYFinalizar"
               :disabled="!mesaIdTicket"
             >
-              💳 Cobrar y Liberar Mesa
+              ðŸ’³ Cobrar y Liberar Mesa
             </button>
           </div>
         </div>
       </div>
     </transition>
 
-    <!-- ── MODAL MONITOR ── -->
+    <!-- â”€â”€ MODAL MONITOR â”€â”€ -->
     <transition name="fade">
       <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
         <div class="monitor-modal">
           <div class="monitor-header">
-            <h2>📺 Estado de Pedidos en Tiempo Real</h2>
+            <h2>ðŸ“º Estado de Pedidos en Tiempo Real</h2>
             <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
               Cerrar
             </button>
@@ -654,7 +658,7 @@ const enviarPedido = async () => {
                 @click="mesaMonitorSeleccionada = mesa.id"
               >
                 <span>Mesa {{ mesa.numero }}</span>
-                <span v-if="mesa.tieneListos" class="badge-listo">✓ LISTO</span>
+                <span v-if="mesa.tieneListos" class="badge-listo">âœ“ LISTO</span>
                 <br>
                 <small style="font-weight: 500; opacity: 0.85;">{{ mesa.zona }}</small>
               </button>
@@ -677,7 +681,7 @@ const enviarPedido = async () => {
                   :class="{ 'comanda-lista': comanda.estado === 'listo' }"
                 >
                   <div class="c-header">
-                    <span class="c-time">🕐 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
+                    <span class="c-time">ðŸ• {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
                     <span class="c-status" :class="comanda.estado.toLowerCase().replace(/[\s_]+/g, '-')">
                       {{ comanda.estado.replace(/_/g, ' ').toUpperCase() }}
                     </span>
@@ -693,7 +697,7 @@ const enviarPedido = async () => {
                       :style="{ background: negocio.colorAcento || '#16a34a' }"
                       @click="marcarComoEntregada(comanda.id, comanda.mesaId)"
                     >
-                      ✓ Marcar como Servido
+                      âœ“ Marcar como Servido
                     </button>
                   </div>
                 </div>
@@ -708,7 +712,7 @@ const enviarPedido = async () => {
 </template>
 
 <style scoped>
-/* ── LAYOUT ── */
+/* â”€â”€ LAYOUT â”€â”€ */
 .pos-master-layout {
   display: flex;
   height: 100vh;
@@ -721,7 +725,7 @@ const enviarPedido = async () => {
 
 .pos-inner-layout { display: flex; flex: 1; overflow: hidden; }
 
-/* ── NOTIFICACIONES ── */
+/* â”€â”€ NOTIFICACIONES â”€â”€ */
 .notificaciones-banner {
   background: linear-gradient(135deg, #16a34a, #15803d);
   color: white;
@@ -772,12 +776,12 @@ const enviarPedido = async () => {
 .banner-slide-enter-active, .banner-slide-leave-active { transition: all 0.3s ease; }
 .banner-slide-enter-from, .banner-slide-leave-to { transform: translateY(-100%); opacity: 0; }
 
-/* ── CONTENEDORES ── */
+/* â”€â”€ CONTENEDORES â”€â”€ */
 .pos-sidebar-container { width: 260px; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 .pos-center-container  { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
 .pos-order-container   { width: 320px; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 
-/* ── MAP HEADER ── */
+/* â”€â”€ MAP HEADER â”€â”€ */
 .map-header {
   height: 64px;
   border-bottom: 1px solid #e2e8f0;
@@ -816,7 +820,7 @@ const enviarPedido = async () => {
 
 .map-area { flex: 1; overflow: hidden; background: #e2e8f0; position: relative; }
 
-/* ── MENU OVERLAY ── */
+/* â”€â”€ MENU OVERLAY â”€â”€ */
 .menu-overlay-panel {
   position: absolute;
   bottom: 0; left: 0; right: 0;
@@ -895,13 +899,30 @@ const enviarPedido = async () => {
 }
 
 .product-card:hover { transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.05); }
+.product-media {
+  width: 100%;
+  height: 92px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+}
+.product-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .product-img { font-size: 2.5rem; margin-bottom: 8px; }
 .price { font-weight: 800; font-size: 1rem; margin: 0; }
 
 .slide-up-enter-active, .slide-up-leave-active { transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); }
 .slide-up-enter-from, .slide-up-leave-to { transform: translateY(100%); }
 
-/* ── TICKET ── */
+/* â”€â”€ TICKET â”€â”€ */
 .modal-backdrop {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
@@ -964,7 +985,7 @@ const enviarPedido = async () => {
 .t-price{ font-weight: bold; flex-shrink: 0; text-align: right; }
 .ticket-empty { color: #94a3b8; font-size: 0.85rem; text-align: center; padding: 10px 0; }
 
-/* ── MONITOR ── */
+/* â”€â”€ MONITOR â”€â”€ */
 .monitor-modal {
   background: white;
   width: 800px;
@@ -1066,3 +1087,4 @@ const enviarPedido = async () => {
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>
+
