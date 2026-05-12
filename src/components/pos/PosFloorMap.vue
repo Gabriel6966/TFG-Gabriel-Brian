@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue'
 import { collection, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from '../../firebase'
@@ -16,9 +16,10 @@ const emit = defineEmits<{
   (e: 'select-table', table: any): void
   (e: 'update-position', id: string, x: number, y: number): void
   (e: 'cobrar-mesa', id: string): void
+  (e: 'comenzar-pedido', table: any): void
 }>()
 
-// ── ELEMENTOS DECORATIVOS ─────────────────────────────────────────
+// ELEMENTOS DECORATIVOS
 
 interface ElementoDecorativo {
   id: string
@@ -204,7 +205,7 @@ const getElementoStyle = (el: ElementoDecorativo) => {
 
 onUnmounted(() => unsubscribeElementos?.())
 
-// ── LÓGICA DE DRAG ────────────────────────────────────────────────
+// LOGICA DE DRAG
 
 const mapRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
@@ -271,7 +272,7 @@ const stopDrag = () => {
   <div class="floor-map-wrapper">
     <div ref="mapRef" class="floor-surface">
 
-      <!-- Cuadrícula de fondo -->
+      <!-- Cuadricula de fondo -->
       <div class="map-grid"></div>
 
       <!-- Elementos decorativos: solo lectura -->
@@ -281,7 +282,7 @@ const stopDrag = () => {
         class="elemento-decor"
         :style="getElementoStyle(el)"
       >
-        <!-- DESPUÉS -->
+        <!-- DESPUES -->
 <svg
   viewBox="0 0 100 100"
   preserveAspectRatio="none"
@@ -325,7 +326,7 @@ const stopDrag = () => {
           <div v-if="mesaSeleccionada === table.nr" class="floating-card" @mousedown.stop>
             <div class="fc-header">
               <div class="fc-title-group">
-                <span class="fc-icon">🪑</span>
+                <span class="fc-icon">M</span>
                 <h4>Mesa {{ table.nr }}</h4>
               </div>
               <span class="fc-badge" :class="table.status">
@@ -333,15 +334,21 @@ const stopDrag = () => {
               </span>
             </div>
             <div class="fc-details" style="text-align: center;">
-              <p v-if="table.status === 'available'" class="fc-mensaje">
-                Añade productos en el panel derecho para comandar.
+              <p class="fc-mensaje">
+                Anade productos para preparar la comanda.
               </p>
               <button
-                v-else
+                v-if="table.status !== 'available'"
                 class="btn-cobro-rapido"
                 @click.stop="emit('cobrar-mesa', table.id)"
               >
-                💳 Cobrar y Liberar
+                Cobrar y liberar
+              </button>
+              <button
+                class="btn-comenzar-pedido"
+                @click.stop="emit('comenzar-pedido', table)"
+              >
+                Comenzar pedido
               </button>
             </div>
             <div class="fc-arrow"></div>
@@ -539,6 +546,24 @@ const stopDrag = () => {
 
 .btn-cobro-rapido:hover {
   background: #15803d;
+  transform: translateY(-1px);
+}
+
+.btn-comenzar-pedido {
+  width: 100%;
+  background: #0f172a;
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-comenzar-pedido:hover {
+  background: #1e293b;
   transform: translateY(-1px);
 }
 </style>

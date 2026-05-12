@@ -15,7 +15,7 @@ withDefaults(defineProps<{
     <span v-if="label" class="powered-copy">Powered by</span>
     <div class="powered-logo-shell">
       <img
-        src="/EasyOrderLogo-transparent.png"
+        src="/Isotipo-Easy-Order.png"
         alt="EasyOrder"
         class="powered-logo"
       >

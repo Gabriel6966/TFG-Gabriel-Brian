@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
@@ -38,14 +38,12 @@ let audioContext: AudioContext | null = null
 let unsubscribe: (() => void) | null = null
 let clockInterval: ReturnType<typeof setInterval> | null = null
 
-// ── COMPUTED ──────────────────────────────────────────────────────
+// COMPUTED
 
 const enCocina = computed(() => comandas.value.filter(c => c.estado === 'en_cocina'))
 const listas   = computed(() => comandas.value.filter(c => c.estado === 'listo'))
 
-const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
-
-// ── AUDIO ─────────────────────────────────────────────────────────
+// AUDIO
 
 const inicializarAudio = () => {
   if (!audioContext) {
@@ -83,7 +81,7 @@ const reproducirSonido = () => {
   }
 }
 
-// ── FIRESTORE ─────────────────────────────────────────────────────
+// FIRESTORE
 
 onMounted(() => {
   clockInterval = setInterval(() => {
@@ -130,7 +128,7 @@ onUnmounted(() => {
   detenerNegocio()
 })
 
-// ── ACCIONES ──────────────────────────────────────────────────────
+// ACCIONES
 
 const toggleLinea = async (comanda: Comanda, index: number) => {
   if (!localId.value) return
@@ -170,10 +168,9 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 <template>
   <div class="cocina-layout" @click="inicializarAudio">
 
-    <!-- ── TOP BAR ── -->
+    <!-- TOP BAR -->
     <header class="top-bar">
       <div class="top-bar-left">
-        <!-- Logo del negocio -->
         <img
           v-if="negocio.logoUrl"
           :src="negocio.logoUrl"
@@ -183,7 +180,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
         <div
           v-else
           class="negocio-logo-placeholder"
-          :style="{ background: colorAcento }"
+          :style="{ background: negocio.colorAcento || '#4f46e5' }"
         >
           {{ negocio.nombreNegocio?.charAt(0) || 'E' }}
         </div>
@@ -213,19 +210,19 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
       </div>
     </header>
 
-    <!-- ── BOARD ── -->
+    <!-- BOARD -->
     <main class="kitchen-board">
 
-      <!-- Sección EN COCINA -->
+      <!-- Seccion EN COCINA -->
       <section class="board-section">
         <div class="section-header">
-          <span class="section-icon">🔥</span>
+          <span class="section-icon">COC</span>
           <h2>En Cocina</h2>
           <span class="section-badge cocina-badge">{{ enCocina.length }}</span>
         </div>
 
         <div v-if="enCocina.length === 0" class="empty-state">
-          <span class="empty-icon">✓</span>
+          <span class="empty-icon">OK</span>
           <p>Sin pedidos pendientes</p>
         </div>
 
@@ -250,12 +247,12 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
                   class="ticket-tiempo"
                   :class="{ urgente: minutosEspera(comanda.fechaHora) >= 10 }"
                 >
-                  ⏱ {{ minutosEspera(comanda.fechaHora) }}min
+                  Tiempo {{ minutosEspera(comanda.fechaHora) }}min
                 </span>
               </div>
             </div>
 
-            <!-- Líneas del pedido -->
+            <!-- Lineas del pedido -->
             <ul class="lineas-list">
               <li
                 v-for="(linea, idx) in comanda.lineas"
@@ -265,35 +262,35 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
                 @click="toggleLinea(comanda, idx)"
               >
                 <span class="linea-check">
-                  {{ lineaEstaLista(comanda, idx) ? '✓' : '○' }}
+                  {{ lineaEstaLista(comanda, idx) ? 'OK' : 'o' }}
                 </span>
                 <span class="linea-qty">{{ linea.cantidad }}x</span>
                 <div class="linea-info">
                   <span class="linea-nombre">{{ linea.nombre }}</span>
-                  <span v-if="linea.notas" class="linea-nota">⚠ {{ linea.notas }}</span>
+                  <span v-if="linea.notas" class="linea-nota">Nota: {{ linea.notas }}</span>
                 </div>
               </li>
             </ul>
 
-            <!-- Botón marcar todo listo -->
+            <!-- Boton marcar todo listo -->
             <button class="btn-todo-listo" @click="marcarTodaLista(comanda)">
-              ✅ Todo listo
+              Todo listo
             </button>
           </article>
         </div>
       </section>
 
-      <!-- Sección LISTOS -->
+      <!-- Seccion LISTOS -->
       <section class="board-section board-section-listo">
         <div class="section-header">
-          <span class="section-icon">🍽</span>
+          <span class="section-icon">LISTO</span>
           <h2>Listos para servir</h2>
           <span class="section-badge listo-badge">{{ listas.length }}</span>
         </div>
 
         <div v-if="listas.length === 0" class="empty-state">
-          <span class="empty-icon">🍽</span>
-          <p>Nada listo todavía</p>
+          <span class="empty-icon">LISTO</span>
+          <p>Nada listo todavia</p>
         </div>
 
         <div class="tickets-grid">
@@ -307,7 +304,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
                 <span class="mesa-num">Mesa {{ comanda.mesaNumero }}</span>
                 <span class="mesa-zona">{{ comanda.zona }}</span>
               </div>
-              <span class="listo-badge-small">✓ LISTO</span>
+              <span class="listo-badge-small">OK LISTO</span>
             </div>
             <ul class="lineas-list">
               <li
@@ -315,7 +312,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
                 :key="idx"
                 class="linea-item linea-lista"
               >
-                <span class="linea-check">✓</span>
+                <span class="linea-check">OK</span>
                 <span class="linea-qty">{{ linea.cantidad }}x</span>
                 <span class="linea-nombre">{{ linea.nombre }}</span>
               </li>
@@ -340,7 +337,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
   overflow: hidden;
 }
 
-/* ── TOP BAR ── */
+/* TOP BAR */
 .top-bar {
   display: flex;
   align-items: center;
@@ -422,7 +419,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 
 .btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
 
-/* ── BOARD ── */
+/* BOARD */
 .kitchen-board {
   flex: 1;
   display: flex;
@@ -435,7 +432,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 .kitchen-board::-webkit-scrollbar { width: 4px; }
 .kitchen-board::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
 
-/* ── SECCIONES ── */
+/* SECCIONES */
 .board-section { display: flex; flex-direction: column; gap: 14px; }
 .board-section-listo { opacity: 0.75; }
 
@@ -466,14 +463,14 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 .cocina-badge { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
 .listo-badge  { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
 
-/* ── GRID DE TICKETS ── */
+/* GRID DE TICKETS */
 .tickets-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
 
-/* ── TICKET ── */
+/* TICKET */
 .ticket {
   background: #1e293b;
   border: 1px solid #334155;
@@ -510,7 +507,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 
 .ticket-urgente { border-left-color: #ef4444; animation: flashUrgente 2s infinite; }
 
-/* ── CABECERA TICKET ── */
+/* CABECERA TICKET */
 .ticket-head {
   display: flex;
   justify-content: space-between;
@@ -537,7 +534,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
   border-radius: 20px;
 }
 
-/* ── LÍNEAS ── */
+/* LINEAS */
 .lineas-list {
   list-style: none;
   display: flex;
@@ -616,7 +613,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
   border-left: 2px solid #fbbf24;
 }
 
-/* ── BOTÓN TODO LISTO ── */
+/* BOTON TODO LISTO */
 .btn-todo-listo {
   width: 100%;
   padding: 8px;
@@ -633,7 +630,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 
 .btn-todo-listo:hover { background: #22c55e; color: #0f172a; }
 
-/* ── ESTADO VACÍO ── */
+/* ESTADO VACIO */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -646,7 +643,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 .empty-icon { font-size: 2rem; }
 .empty-state p { font-size: 0.9rem; }
 
-/* ── RESPONSIVE ── */
+/* RESPONSIVE */
 @media (max-width: 768px) {
   .tickets-grid { grid-template-columns: 1fr; }
   .top-bar { flex-wrap: wrap; height: auto; padding: 12px 16px; }

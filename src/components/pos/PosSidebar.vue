@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useNegocio } from '../../composables/useNegocio'
 import PoweredByEasyOrder from '../branding/PoweredByEasyOrder.vue'
@@ -47,11 +47,10 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 <template>
   <div class="sidebar-wrapper">
 
-    <!-- ── BRAND ── -->
+    <!-- BRAND -->
     <div class="user-profile">
       <div class="brand" :style="{ borderBottomColor: colorAcento }">
         <div class="brand-identity">
-          <!-- Logo del negocio -->
           <img
             v-if="negocio.logoUrl"
             :src="negocio.logoUrl"
@@ -78,15 +77,15 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
           <span class="role">Camarero</span>
           <span class="local-badge">{{ localId || 'LOCAL' }}</span>
         </div>
-        <button class="btn-logout" @click="emit('logout')">Cerrar<br>sesión</button>
+        <button class="btn-logout" @click="emit('logout')">Cerrar<br>sesion</button>
       </div>
     </div>
 
     <div class="scrollable-content">
 
-      <!-- ── RESUMEN ── -->
+      <!-- RESUMEN -->
       <section class="sidebar-section">
-        <h3 class="section-title">📊 Resumen del servicio</h3>
+        <h3 class="section-title">Resumen del servicio</h3>
         <div class="stats-grid">
           <div class="stat-card available">
             <span class="number">{{ resumen.disponibles }}</span>
@@ -107,7 +106,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
         </div>
       </section>
 
-      <!-- ── SECCIONES / ZONAS ── -->
+      <!-- SECCIONES / ZONAS -->
       <section class="sidebar-section">
         <h3 class="section-title">Secciones</h3>
         <div class="sections-list">
@@ -128,9 +127,9 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
         </div>
       </section>
 
-      <!-- ── FILTROS ── -->
+      <!-- FILTROS -->
       <section class="sidebar-section">
-        <h3 class="section-title">Filtros rápidos</h3>
+        <h3 class="section-title">Filtros rapidos</h3>
         <div class="filters-list">
           <button
             class="filter-pill"
@@ -158,26 +157,26 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
         </div>
       </section>
 
-      <!-- ── ACCIONES ── -->
+      <!-- ACCIONES -->
       <section class="sidebar-section action-section">
         <button
           class="btn-monitor-sidebar"
           :style="{ background: `${colorAcento}15`, borderColor: `${colorAcento}40`, color: colorAcento }"
           @click="emit('abrir-modal-monitor')"
         >
-          📺 Monitor de Pedidos
+          Monitor de pedidos
           <span v-if="comandasListasCount && comandasListasCount > 0" class="badge">
             {{ comandasListasCount }}
           </span>
         </button>
         <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
-          ✓ Finalizar Servicio
+          Finalizar servicio
         </button>
       </section>
 
     </div>
 
-    <!-- ── POWERED BY (abajo del todo) ── -->
+    <!-- POWERED BY -->
     <div class="sidebar-bottom">
       <PoweredByEasyOrder compact />
     </div>
@@ -194,7 +193,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   background: white;
 }
 
-/* ── BRAND ── */
+/* BRAND */
 .user-profile {
   padding: 20px 20px 0;
   border-bottom: 1px solid #e2e8f0;
@@ -254,7 +253,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   text-overflow: ellipsis;
 }
 
-/* ── INFO EMPLEADO ── */
+/* INFO EMPLEADO */
 .user-details {
   display: flex;
   justify-content: space-between;
@@ -301,7 +300,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .btn-logout:hover { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
 
-/* ── SCROLL CONTENT ── */
+/* SCROLL CONTENT */
 .scrollable-content {
   flex: 1;
   overflow-y: auto;
@@ -320,7 +319,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   margin: 0 0 10px;
 }
 
-/* ── STATS ── */
+/* STATS */
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .stat-card {
@@ -342,7 +341,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 .stat-card.preparing .number { color: #d97706; }
 .stat-card.reserved  .number { color: #94a3b8; }
 
-/* ── SECCIONES ── */
+/* SECCIONES */
 .sections-list { display: flex; flex-direction: column; gap: 4px; }
 
 .section-item {
@@ -363,7 +362,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 .sec-name   { flex: 1; text-align: left; font-size: 0.88rem; color: #475569; transition: color 0.2s; }
 .sec-count  { font-size: 0.75rem; color: #94a3b8; font-weight: 600; background: #f1f5f9; padding: 2px 7px; border-radius: 20px; transition: all 0.2s; }
 
-/* ── FILTROS ── */
+/* FILTROS */
 .filters-list { display: flex; flex-direction: column; gap: 7px; }
 
 .filter-pill {
@@ -394,7 +393,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 .indicator.red   { border: 2px solid #dc2626; }
 .indicator.green { border: 2px solid #16a34a; }
 
-/* ── ACCIONES ── */
+/* ACCIONES */
 .action-section {
   padding-top: 16px;
   border-top: 1px dashed #e2e8f0;
@@ -458,7 +457,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   100% { transform: scale(1);   opacity: 1; }
 }
 
-/* ── POWERED BY ── */
+/* POWERED BY */
 .sidebar-bottom {
   padding: 12px 20px;
   border-top: 1px solid #f1f5f9;

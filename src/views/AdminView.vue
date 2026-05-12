@@ -48,6 +48,9 @@ interface Categoria {
   nombre: string
   icono: string
   imageUrl?: string
+  orderIndex?: number
+  createdAt?: any
+  updatedAt?: any
 }
 
 interface Zona {
@@ -134,6 +137,7 @@ const facturaSeleccionada = ref<Factura | null>(null)
 const nuevoItemSeleccionado = ref('')
 const subiendoFotoProducto = ref(false)
 const subiendoFotoCategoria = ref(false)
+const ordenCategorias = ref<'manual' | 'alfabetico' | 'alfabeticoDesc' | 'actualizacion' | 'productos' | 'bebidas'>('manual')
 
 const CLOUDINARY_CLOUD = 'dnlcwm5x9'
 const CLOUDINARY_PRESET = 'easyorder_uploads'
@@ -233,7 +237,7 @@ const mesasParaMapa = computed(() =>
 // ── COMPUTED: MENÚ ──
 const productosPorCategoria = computed(() => {
   const grupos: Record<string, Producto[]> = {}
-  for (const cat of categorias.value) {
+  for (const cat of categoriasOrdenadas.value) {
     grupos[cat.nombre] = productos.value.filter(p => p.category === cat.nombre)
   }
   const sinCategoria = productos.value.filter(
@@ -241,6 +245,66 @@ const productosPorCategoria = computed(() => {
   )
   if (sinCategoria.length > 0) grupos['Sin categoría'] = sinCategoria
   return grupos
+})
+
+const obtenerCategoria = (nombre: string) =>
+  categorias.value.find(c => c.nombre === nombre)
+
+const contarProductosCategoria = (nombre: string) =>
+  productos.value.filter(p => p.category === nombre).length
+
+const fechaCategoriaMs = (cat: Categoria) => {
+  const fecha = cat.updatedAt || cat.createdAt
+  if (!fecha) return 0
+  if (typeof fecha.toMillis === 'function') return fecha.toMillis()
+  if (typeof fecha.seconds === 'number') return fecha.seconds * 1000
+  if (fecha instanceof Date) return fecha.getTime()
+  const parsed = new Date(fecha).getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const esCategoriaBebida = (cat: Categoria) => {
+  const texto = cat.nombre
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  return ['bebida', 'bebidas', 'drink', 'drinks', 'bar', 'vino', 'cerveza', 'refresco', 'coctel'].some(
+    palabra => texto.includes(palabra)
+  )
+}
+
+const categoriasOrdenadas = computed(() => {
+  const base = categorias.value.map((cat, index) => ({ cat, index }))
+
+  return base
+    .sort((a, b) => {
+      if (ordenCategorias.value === 'alfabetico') {
+        return a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'alfabeticoDesc') {
+        return b.cat.nombre.localeCompare(a.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'actualizacion') {
+        return fechaCategoriaMs(b.cat) - fechaCategoriaMs(a.cat)
+      }
+
+      if (ordenCategorias.value === 'productos') {
+        return contarProductosCategoria(b.cat.nombre) - contarProductosCategoria(a.cat.nombre)
+          || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'bebidas') {
+        return Number(esCategoriaBebida(b.cat)) - Number(esCategoriaBebida(a.cat))
+          || (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+      }
+
+      return (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+        || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+    })
+    .map(({ cat }) => cat)
 })
 
 // ── CARGA DE DATOS ──
@@ -626,7 +690,8 @@ const guardarCategoria = async () => {
     const payload = {
       nombre: nombreNuevo,
       icono: nuevaCategoria.value.icono || '🍽️',
-      imageUrl: nuevaCategoria.value.imageUrl || ''
+      imageUrl: nuevaCategoria.value.imageUrl || '',
+      updatedAt: new Date()
     }
 
     if (editandoCategoriaId.value) {
@@ -645,11 +710,46 @@ const guardarCategoria = async () => {
 
       await batch.commit()
     } else {
-      await addDoc(collection(db, `locales/${localId.value}/categorias`), payload)
+      const siguienteOrden = Math.max(
+        -1,
+        ...categorias.value.map(c => typeof c.orderIndex === 'number' ? c.orderIndex : -1)
+      ) + 1
+
+      await addDoc(collection(db, `locales/${localId.value}/categorias`), {
+        ...payload,
+        orderIndex: siguienteOrden,
+        createdAt: new Date()
+      })
     }
 
     resetCategoriaForm()
   } catch { alert('Error al guardar la categoría.') }
+}
+
+const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
+  if (!localId.value) return
+
+  const lista = [...categoriasOrdenadas.value]
+  const indiceActual = lista.findIndex(c => c.id === cat.id)
+  const nuevoIndice = indiceActual + direccion
+
+  if (indiceActual < 0 || nuevoIndice < 0 || nuevoIndice >= lista.length) return
+
+  const [categoriaMovida] = lista.splice(indiceActual, 1)
+  lista.splice(nuevoIndice, 0, categoriaMovida)
+
+  try {
+    ordenCategorias.value = 'manual'
+    await Promise.all(
+      lista.map((categoria, index) =>
+        updateDoc(doc(db, `locales/${localId.value}/categorias`, categoria.id), {
+          orderIndex: index
+        })
+      )
+    )
+  } catch {
+    alert('Error al reordenar las categorías.')
+  }
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
@@ -1052,27 +1152,46 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
             </div>
           </div>
 
-          <div class="lista-card">
-            <h3 class="form-card-title">Carta actual</h3>
+          <div class="lista-card carta-card">
+            <div class="carta-title-row">
+              <div>
+                <h3 class="form-card-title">Carta actual</h3>
+                <p class="carta-subtitle">Vista organizada por categorías</p>
+              </div>
+              <span class="carta-total">{{ productos.length }} platos</span>
+            </div>
             <div v-if="productos.length === 0" class="empty-state-box">No hay productos todavía.</div>
             <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
               <div class="categoria-header">
-                <span class="categoria-icono">{{ categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️' }}</span>
+                <div class="categoria-visual">
+                  <img
+                    v-if="obtenerCategoria(categoria)?.imageUrl"
+                    :src="obtenerCategoria(categoria)?.imageUrl"
+                    :alt="categoria"
+                    class="categoria-thumb"
+                  >
+                  <span v-else class="categoria-icono">{{ obtenerCategoria(categoria)?.icono ?? '🍽️' }}</span>
+                </div>
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
-              <div v-for="p in platos" :key="p.id" class="item-row">
-                <div class="producto-visual">
-                  <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="producto-thumb">
-                  <span v-else class="item-icon">{{ p.icon }}</span>
-                </div>
-                <div class="item-info">
-                  <span class="item-name">{{ p.name }}</span>
-                </div>
-                <span class="item-price">{{ Number(p.price).toFixed(2) }}€</span>
-                <div class="item-actions">
-                  <button class="btn-editar" @click="editarProducto(p)">✎</button>
-                  <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
+              <div class="menu-platos-grid">
+                <div v-for="p in platos" :key="p.id" class="menu-plato-card">
+                  <div class="menu-plato-media">
+                    <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="menu-plato-photo">
+                    <span v-else class="menu-plato-icon">{{ p.icon }}</span>
+                  </div>
+                  <div class="menu-plato-info">
+                    <span class="menu-plato-name">{{ p.name }}</span>
+                    <span class="menu-plato-category">{{ categoria }}</span>
+                  </div>
+                  <div class="menu-plato-footer">
+                    <span class="menu-plato-price">{{ Number(p.price).toFixed(2) }}€</span>
+                    <div class="item-actions">
+                      <button class="btn-editar" @click="editarProducto(p)" title="Editar plato">✎</button>
+                      <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)" title="Eliminar plato">✕</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1313,7 +1432,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
     <!-- ══ MODAL: CATEGORÍAS ══ -->
     <transition name="fade">
       <div v-if="mostrarModalCategorias" class="modal-backdrop" @click.self="mostrarModalCategorias = false">
-        <div class="modal-content modal-sm">
+        <div class="modal-content modal-sm modal-categorias">
           <div class="modal-header">
             <h2>Gestionar Categorías</h2>
             <button class="btn-close" @click="mostrarModalCategorias = false">✕</button>
@@ -1365,18 +1484,44 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 </div>
               </div>
               <div class="lista-card">
-                <h3 class="form-card-title">Categorías actuales</h3>
+                <div class="categoria-list-toolbar">
+                  <h3 class="form-card-title">Categorías actuales</h3>
+                  <select v-model="ordenCategorias" class="category-sort-select" aria-label="Ordenar categorías">
+                    <option value="manual">Orden personalizado</option>
+                    <option value="alfabetico">A-Z</option>
+                    <option value="alfabeticoDesc">Z-A</option>
+                    <option value="actualizacion">Última actualización</option>
+                    <option value="productos">Más productos</option>
+                    <option value="bebidas">Bebidas primero</option>
+                  </select>
+                </div>
                 <div v-if="categorias.length === 0" class="empty-state-box">No hay categorías todavía.</div>
-                <div v-for="cat in categorias" :key="cat.id" class="item-row">
+                <div v-for="(cat, index) in categoriasOrdenadas" :key="cat.id" class="item-row">
                   <div class="producto-visual">
                     <img v-if="cat.imageUrl" :src="cat.imageUrl" :alt="cat.nombre" class="producto-thumb">
                     <span v-else class="item-icon">{{ cat.icono }}</span>
                   </div>
                   <div class="item-info">
                     <span class="item-name">{{ cat.nombre }}</span>
-                    <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
+                    <span class="item-sub">{{ contarProductosCategoria(cat.nombre) }} productos</span>
                   </div>
                   <div class="item-actions">
+                    <button
+                      class="btn-reorder"
+                      :disabled="index === 0"
+                      title="Subir categoría"
+                      @click="moverCategoria(cat, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      class="btn-reorder"
+                      :disabled="index === categoriasOrdenadas.length - 1"
+                      title="Bajar categoría"
+                      @click="moverCategoria(cat, 1)"
+                    >
+                      ↓
+                    </button>
                     <button class="btn-editar" @click="editarCategoria(cat)">✎</button>
                     <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
                   </div>
@@ -1900,12 +2045,219 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
 .item-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
+.categoria-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.categoria-list-toolbar .form-card-title { margin-bottom: 0; }
+
+.category-sort-select {
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: #0f172a;
+  font-size: 0.85rem;
+  font-weight: 600;
+  outline: none;
+}
+
+.category-sort-select:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.08);
+}
+
+/* ── CARTA ACTUAL ── */
+.carta-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.92)),
+    repeating-linear-gradient(0deg, rgba(226,232,240,0.28) 0 1px, transparent 1px 26px);
+}
+
+.carta-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 18px;
+}
+
+.carta-title-row .form-card-title { margin-bottom: 4px; }
+
+.carta-subtitle {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.carta-total {
+  background: #0f172a;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.menu-platos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+  padding: 14px 0 6px;
+}
+
+.menu-plato-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 12px;
+  padding: 12px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+}
+
+.menu-plato-card:hover {
+  transform: translateY(-2px);
+  border-color: #cbd5e1;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.menu-plato-media {
+  grid-row: 1 / span 2;
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.menu-plato-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.menu-plato-icon {
+  font-size: 2rem;
+}
+
+.menu-plato-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+
+.menu-plato-name {
+  color: #0f172a;
+  font-size: 0.96rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.menu-plato-category {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.menu-plato-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  align-self: end;
+}
+
+.menu-plato-price {
+  color: #4f46e5;
+  font-size: 1rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 /* ── MENÚ CATEGORÍAS ── */
-.categoria-grupo { margin-bottom: 6px; }
-.categoria-header { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; border-bottom: 2px solid #f1f5f9; margin-bottom: 4px; margin-top: 16px; }
-.categoria-icono { font-size: 1.1rem; }
-.categoria-nombre { font-weight: 700; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.78rem; }
+.categoria-grupo { margin-bottom: 24px; }
+.categoria-grupo:last-child { margin-bottom: 0; }
+.categoria-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #ffffff, #f8fafc);
+  border: 1px solid #dbe3ee;
+  border-left: 5px solid #4f46e5;
+  border-radius: 14px;
+  margin-top: 18px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+.categoria-visual {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.categoria-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.categoria-icono { font-size: 1.55rem; }
+.categoria-nombre { font-weight: 900; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0; font-size: 1.08rem; }
 .categoria-count { background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+
+.btn-reorder {
+  width: 30px;
+  height: 30px;
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-reorder:hover:not(:disabled) {
+  background: #e0e7ff;
+  color: #4338ca;
+  border-color: #c7d2fe;
+}
+
+.btn-reorder:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* ── EMPLEADOS ── */
 .empleado-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
@@ -2203,6 +2555,18 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 }
 
 .modal-sm { width: 700px; }
+.modal-categorias {
+  width: 1080px;
+  max-width: 98vw;
+}
+
+.modal-categorias .dos-columnas {
+  grid-template-columns: 360px minmax(0, 1fr);
+}
+
+.modal-categorias .modal-body {
+  overflow-x: hidden;
+}
 
 .modal-header {
   display: flex;
@@ -2383,11 +2747,16 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 @media (max-width: 1100px) {
   .dos-columnas { grid-template-columns: 1fr; }
   .form-card { position: static; }
+  .modal-categorias .dos-columnas { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {
   .content { padding: 20px; }
   .modal-content { width: 95%; }
+  .modal-categorias { width: 96%; }
+  .categoria-list-toolbar { align-items: stretch; flex-direction: column; }
+  .category-sort-select { width: 100%; }
+  .menu-platos-grid { grid-template-columns: 1fr; }
   .modal-ticket { width: 95%; }
   .tickets-grid { grid-template-columns: 1fr; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
@@ -2396,5 +2765,22 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 @media (max-width: 600px) {
   .kpi-grid { grid-template-columns: 1fr; }
   .finanzas-filtros { flex-direction: column; }
+  .menu-plato-card {
+    grid-template-columns: 60px minmax(0, 1fr);
+  }
+
+  .menu-plato-media {
+    width: 60px;
+    height: 60px;
+  }
+
+  .carta-title-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .carta-total {
+    width: fit-content;
+  }
 }
 </style>
