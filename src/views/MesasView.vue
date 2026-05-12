@@ -71,7 +71,7 @@ const mostrarModalMonitor = ref(false)
 const comandasActivas = ref<any[]>([])
 const mesaMonitorSeleccionada = ref<string | null>(null)
 
-// â”€â”€ NOTIFICACIONES â”€â”€
+// NOTIFICACIONES
 const comandasNotificadas = ref<Set<string>>(new Set())
 const notificaciones = ref<Notificacion[]>([])
 
@@ -139,7 +139,7 @@ const comandasListasCount = computed(() =>
   comandasActivas.value.filter(c => c.estado === 'listo').length
 )
 
-// â”€â”€ LISTENERS â”€â”€
+// LISTENERS
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
@@ -232,7 +232,7 @@ onUnmounted(() => {
   detenerNegocio()
 })
 
-// â”€â”€ COMPUTED â”€â”€
+// COMPUTED
 
 const cuentaFinalMesa = computed(() => {
   if (!mesaIdTicket.value) return { items: [], total: 0 }
@@ -340,7 +340,7 @@ const cerrarCartaPedido = () => {
   mostrarModalCarta.value = false
 }
 
-// â”€â”€ ACCIONES â”€â”€
+// ACCIONES
 
 const openTable = (table: any) => {
   inicializarAudio()
@@ -491,15 +491,15 @@ const enviarPedido = async () => {
 <template>
   <div class="pos-master-layout" @click="inicializarAudio">
 
-    <!-- â”€â”€ BANNER NOTIFICACIONES â”€â”€ -->
+    <!-- BANNER NOTIFICACIONES -->
     <transition name="banner-slide">
       <div v-if="notificaciones.length > 0" class="notificaciones-banner">
         <div class="banner-content">
-          <span class="banner-icon">ðŸ””</span>
+          <span class="banner-icon">AVISO</span>
           <div class="banner-lista">
             <div v-for="notif in notificaciones" :key="notif.id" class="banner-item">
               <span class="banner-texto">{{ notif.texto }}</span>
-              <button class="btn-banner-entregar" @click="descartarNotificacion(notif)">âœ“ Servido</button>
+              <button class="btn-banner-entregar" @click="descartarNotificacion(notif)">Marcar servido</button>
             </div>
           </div>
           <button v-if="notificaciones.length > 1" class="btn-banner-all" @click="descartarTodasNotificaciones">
@@ -511,7 +511,7 @@ const enviarPedido = async () => {
 
     <div class="pos-inner-layout">
 
-      <!-- â”€â”€ SIDEBAR â”€â”€ -->
+      <!-- SIDEBAR -->
       <aside class="pos-sidebar-container">
         <PosSidebar
           :user-email="currentUser?.email ?? undefined"
@@ -529,7 +529,7 @@ const enviarPedido = async () => {
         />
       </aside>
 
-      <!-- â”€â”€ CENTRO â”€â”€ -->
+      <!-- CENTRO -->
       <main class="pos-center-container">
         <header class="map-header">
           <div class="header-spacer"></div>
@@ -564,7 +564,7 @@ const enviarPedido = async () => {
         </div>
       </main>
 
-      <!-- â”€â”€ PANEL PEDIDO â”€â”€ -->
+      <!-- PANEL PEDIDO -->
       <aside class="pos-order-container">
         <PosOrderPanel
           :mesa-seleccionada="mesaSeleccionada"
@@ -574,7 +574,7 @@ const enviarPedido = async () => {
       </aside>
     </div>
 
-    <!-- â”€â”€ MODAL TOMAR NOTA â”€â”€ -->
+    <!-- MODAL TOMAR NOTA -->
     <transition name="fade">
       <div v-if="mostrarModalCarta" class="modal-backdrop carta-backdrop" @click.self="cerrarCartaPedido">
         <div class="tomar-nota-modal">
@@ -682,7 +682,7 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
-    <!-- â”€â”€ MODAL TICKET â”€â”€ -->
+    <!-- MODAL TICKET -->
     <transition name="fade">
       <div v-if="mostrarModalTicket" class="modal-backdrop" @click.self="mostrarModalTicket = false">
         <div class="ticket-modal">
@@ -754,7 +754,7 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
-    <!-- â”€â”€ MODAL MONITOR â”€â”€ -->
+    <!-- MODAL MONITOR -->
     <transition name="fade">
       <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
         <div class="monitor-modal">
@@ -831,7 +831,7 @@ const enviarPedido = async () => {
 </template>
 
 <style scoped>
-/* â”€â”€ LAYOUT â”€â”€ */
+/* LAYOUT */
 .pos-master-layout {
   display: flex;
   height: 100vh;
@@ -844,7 +844,7 @@ const enviarPedido = async () => {
 
 .pos-inner-layout { display: flex; flex: 1; overflow: hidden; }
 
-/* â”€â”€ NOTIFICACIONES â”€â”€ */
+/* NOTIFICACIONES */
 .notificaciones-banner {
   background: linear-gradient(135deg, #16a34a, #15803d);
   color: white;
@@ -895,12 +895,12 @@ const enviarPedido = async () => {
 .banner-slide-enter-active, .banner-slide-leave-active { transition: all 0.3s ease; }
 .banner-slide-enter-from, .banner-slide-leave-to { transform: translateY(-100%); opacity: 0; }
 
-/* â”€â”€ CONTENEDORES â”€â”€ */
+/* CONTENEDORES */
 .pos-sidebar-container { width: 260px; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 .pos-center-container  { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
 .pos-order-container   { width: 320px; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 
-/* â”€â”€ MAP HEADER â”€â”€ */
+/* MAP HEADER */
 .map-header {
   height: 64px;
   border-bottom: 1px solid #e2e8f0;
@@ -939,7 +939,7 @@ const enviarPedido = async () => {
 
 .map-area { flex: 1; overflow: hidden; background: #e2e8f0; position: relative; }
 
-/* â”€â”€ MENU OVERLAY â”€â”€ */
+/* MENU OVERLAY */
 .menu-overlay-panel {
   position: absolute;
   bottom: 0; left: 0; right: 0;
@@ -1459,7 +1459,7 @@ const enviarPedido = async () => {
 .slide-up-enter-active, .slide-up-leave-active { transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); }
 .slide-up-enter-from, .slide-up-leave-to { transform: translateY(100%); }
 
-/* â”€â”€ TICKET â”€â”€ */
+/* TICKET */
 .modal-backdrop {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
@@ -1522,7 +1522,7 @@ const enviarPedido = async () => {
 .t-price{ font-weight: bold; flex-shrink: 0; text-align: right; }
 .ticket-empty { color: #94a3b8; font-size: 0.85rem; text-align: center; padding: 10px 0; }
 
-/* â”€â”€ MONITOR â”€â”€ */
+/* MONITOR */
 .monitor-modal {
   background: white;
   width: 800px;

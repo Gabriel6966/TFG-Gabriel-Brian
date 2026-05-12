@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue'
 import { collection, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from '../../firebase'
@@ -19,7 +19,7 @@ const emit = defineEmits<{
   (e: 'comenzar-pedido', table: any): void
 }>()
 
-// ── ELEMENTOS DECORATIVOS ─────────────────────────────────────────
+// ELEMENTOS DECORATIVOS
 
 interface ElementoDecorativo {
   id: string
@@ -205,7 +205,7 @@ const getElementoStyle = (el: ElementoDecorativo) => {
 
 onUnmounted(() => unsubscribeElementos?.())
 
-// ── LÓGICA DE DRAG ────────────────────────────────────────────────
+// LOGICA DE DRAG
 
 const mapRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
@@ -272,7 +272,7 @@ const stopDrag = () => {
   <div class="floor-map-wrapper">
     <div ref="mapRef" class="floor-surface">
 
-      <!-- Cuadrícula de fondo -->
+      <!-- Cuadricula de fondo -->
       <div class="map-grid"></div>
 
       <!-- Elementos decorativos: solo lectura -->
@@ -282,7 +282,7 @@ const stopDrag = () => {
         class="elemento-decor"
         :style="getElementoStyle(el)"
       >
-        <!-- DESPUÉS -->
+        <!-- DESPUES -->
 <svg
   viewBox="0 0 100 100"
   preserveAspectRatio="none"
@@ -326,7 +326,7 @@ const stopDrag = () => {
           <div v-if="mesaSeleccionada === table.nr" class="floating-card" @mousedown.stop>
             <div class="fc-header">
               <div class="fc-title-group">
-                <span class="fc-icon">🪑</span>
+                <span class="fc-icon">M</span>
                 <h4>Mesa {{ table.nr }}</h4>
               </div>
               <span class="fc-badge" :class="table.status">
@@ -335,14 +335,14 @@ const stopDrag = () => {
             </div>
             <div class="fc-details" style="text-align: center;">
               <p class="fc-mensaje">
-                Añade productos en el panel derecho para comandar.
+                Anade productos para preparar la comanda.
               </p>
               <button
                 v-if="table.status !== 'available'"
                 class="btn-cobro-rapido"
                 @click.stop="emit('cobrar-mesa', table.id)"
               >
-                💳 Cobrar y Liberar
+                Cobrar y liberar
               </button>
               <button
                 class="btn-comenzar-pedido"

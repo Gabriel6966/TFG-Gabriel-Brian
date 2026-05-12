@@ -120,7 +120,7 @@ const handleResetPassword = async () => {
           <div class="logo-shell">
             <div class="logo-panel">
               <img
-                src="/EasyOrderLogo-transparent.png"
+                src="/Isotipo-Easy-Order.png"
                 alt="Logo EasyOrder"
                 class="logo-icon-image"
               >
