@@ -2,13 +2,14 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
-  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc
+  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc, writeBatch
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 import { useNegocio } from '../composables/useNegocio'
 import EmojiPicker from 'vue3-emoji-picker'
 import FloorEditor from '../components/pos/FloorEditor.vue'
+import PoweredByEasyOrder from '../components/branding/PoweredByEasyOrder.vue'
 
 // --- Interfaces TypeScript ---
 interface Mesa {
@@ -18,6 +19,8 @@ interface Mesa {
   estado: 'libre' | 'ocupada'
   capacidad: number
   zona?: string
+  x?: number
+  y?: number
 }
 
 interface Factura {
@@ -122,6 +125,8 @@ const mostrarModalDetalleFactura = ref(false)
 // ── FORMULARIOS ──
 const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️', imageUrl: '' })
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
+const editandoProductoId = ref<string | null>(null)
+const editandoCategoriaId = ref<string | null>(null)
 const nuevaZona = ref({ nombre: '', icono: '🛋️' })
 const nuevaInvitacion = ref({ email: '', rol: 'camarero' as 'admin' | 'camarero' | 'cocinero' })
 const facturaEditando = ref<Partial<Factura>>({})
@@ -136,8 +141,6 @@ const CLOUDINARY_PRESET = 'easyorder_uploads'
 // ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
 const zonaActiva = ref('')
-const posicionesMesas = ref<Record<string, { x: number, y: number }>>({})
-
 // ── NEGOCIO ──
 const configEditando = ref({
   nombreNegocio: '',
@@ -222,8 +225,8 @@ const mesasParaMapa = computed(() =>
     nr: m.numero,
     status: m.estado === 'libre' ? 'available' : m.estado === 'ocupada' ? 'occupied' : 'preparing',
     capacity: m.capacidad,
-    x: posicionesMesas.value[m.id]?.x,
-    y: posicionesMesas.value[m.id]?.y
+    x: m.x,
+    y: m.y
   }))
 )
 
@@ -265,10 +268,6 @@ onMounted(() => {
   if (!localId.value) return
 
   iniciarNegocio(localId.value)
-
-  posicionesMesas.value = JSON.parse(
-    localStorage.getItem(`posicionesMesas_${localId.value}`) || '{}'
-  )
 
   cargarFacturas(filtroFecha.value)
 
@@ -376,9 +375,18 @@ void guardarConfig
 void subirLogo
 
 // ── ACCIONES: MAPA ──
-const handleUpdatePosition = (id: string, x: number, y: number) => {
-  posicionesMesas.value[id] = { x, y }
-  localStorage.setItem(`posicionesMesas_${localId.value}`, JSON.stringify(posicionesMesas.value))
+const handleUpdatePosition = async (id: string, x: number, y: number) => {
+  if (!localId.value) return
+  const mesa = mesas.value.find(m => m.id === id)
+  if (mesa) {
+    mesa.x = x
+    mesa.y = y
+  }
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { x, y })
+  } catch {
+    alert('Error al guardar la posición de la mesa.')
+  }
 }
 
 const handleSelectTable = (table: any) => {
@@ -396,11 +404,14 @@ const generarMesas = async () => {
     const ultimaNumero = mesasEnZona.length > 0
       ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
     for (let i = 1; i <= cantidadMesas.value; i++) {
+      const index = mesasEnZona.length + i - 1
       await addDoc(collection(db, `locales/${localId.value}/mesas`), {
         numero: ultimaNumero + i,
         estado: 'libre',
         capacidad: 4,
-        zona: zonaActiva.value
+        zona: zonaActiva.value,
+        x: 12 + (index % 4) * 22,
+        y: 15 + Math.floor(index / 4) * 20
       })
     }
   } catch { alert('Error al generar mesas.') }
@@ -439,16 +450,6 @@ const eliminarZona = async (id: string, nombre: string) => {
 }
 
 // ── ACCIONES: CATEGORÍAS ──
-const guardarCategoria = async () => {
-  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
-  const yaExiste = categorias.value.some(c => c.nombre.toLowerCase() === nuevaCategoria.value.nombre.toLowerCase())
-  if (yaExiste) return alert('Esa categoría ya existe.')
-  try {
-    await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...nuevaCategoria.value })
-    nuevaCategoria.value = { nombre: '', icono: '🍽️', imageUrl: '' }
-  } catch { alert('Error al crear la categoría.') }
-}
-
 const subirFotoCategoria = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length || !localId.value) return
@@ -492,6 +493,21 @@ const quitarFotoCategoria = () => {
   nuevaCategoria.value.imageUrl = ''
 }
 
+const resetCategoriaForm = () => {
+  editandoCategoriaId.value = null
+  nuevaCategoria.value = { nombre: '', icono: '🍽️', imageUrl: '' }
+}
+
+const editarCategoria = (cat: Categoria) => {
+  editandoCategoriaId.value = cat.id
+  nuevaCategoria.value = {
+    nombre: cat.nombre,
+    icono: cat.icono,
+    imageUrl: cat.imageUrl || ''
+  }
+  mostrarModalCategorias.value = true
+}
+
 const eliminarCategoria = async (id: string, nombre: string) => {
   if (!localId.value) return
   const afectados = productos.value.filter(p => p.category === nombre).length
@@ -505,14 +521,50 @@ const eliminarCategoria = async (id: string, nombre: string) => {
 }
 
 // ── ACCIONES: PRODUCTOS ──
+const resetProductoForm = () => {
+  editandoProductoId.value = null
+  nuevoProducto.value = {
+    name: '',
+    price: 0,
+    category: categorias.value[0]?.nombre ?? '',
+    icon: '🍽️',
+    imageUrl: ''
+  }
+}
+
+const editarProducto = (producto: Producto) => {
+  editandoProductoId.value = producto.id
+  nuevoProducto.value = {
+    name: producto.name,
+    price: Number(producto.price),
+    category: producto.category,
+    icon: producto.icon,
+    imageUrl: producto.imageUrl || ''
+  }
+}
+
 const guardarProducto = async () => {
   if (!localId.value) return
   if (!nuevoProducto.value.name.trim()) return alert('El nombre es obligatorio.')
   if (nuevoProducto.value.price <= 0) return alert('El precio debe ser mayor que 0.')
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
   try {
-    await addDoc(collection(db, `locales/${localId.value}/productos`), { ...nuevoProducto.value })
-    nuevoProducto.value = { name: '', price: 0, category: categorias.value[0]?.nombre ?? '', icon: '🍽️', imageUrl: '' }
+    const payload = {
+      ...nuevoProducto.value,
+      name: nuevoProducto.value.name.trim(),
+      price: Number(nuevoProducto.value.price),
+      category: nuevoProducto.value.category,
+      icon: nuevoProducto.value.icon || '🍽️',
+      imageUrl: nuevoProducto.value.imageUrl || ''
+    }
+
+    if (editandoProductoId.value) {
+      await updateDoc(doc(db, `locales/${localId.value}/productos`, editandoProductoId.value), payload)
+    } else {
+      await addDoc(collection(db, `locales/${localId.value}/productos`), payload)
+    }
+
+    resetProductoForm()
   } catch { alert('Error al guardar el producto.') }
 }
 
@@ -557,6 +609,47 @@ const subirFotoProducto = async (e: Event) => {
 
 const quitarFotoProducto = () => {
   nuevoProducto.value.imageUrl = ''
+}
+
+const guardarCategoria = async () => {
+  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
+
+  const nombreNuevo = nuevaCategoria.value.nombre.trim()
+  const nombreAnterior = categorias.value.find(c => c.id === editandoCategoriaId.value)?.nombre
+  const yaExiste = categorias.value.some(c =>
+    c.nombre.toLowerCase() === nombreNuevo.toLowerCase() && c.id !== editandoCategoriaId.value
+  )
+
+  if (yaExiste) return alert('Esa categoría ya existe.')
+
+  try {
+    const payload = {
+      nombre: nombreNuevo,
+      icono: nuevaCategoria.value.icono || '🍽️',
+      imageUrl: nuevaCategoria.value.imageUrl || ''
+    }
+
+    if (editandoCategoriaId.value) {
+      const batch = writeBatch(db)
+      batch.update(doc(db, `locales/${localId.value}/categorias`, editandoCategoriaId.value), payload)
+
+      if (nombreAnterior && nombreAnterior !== nombreNuevo) {
+        productos.value
+          .filter(p => p.category === nombreAnterior)
+          .forEach((producto) => {
+            batch.update(doc(db, `locales/${localId.value}/productos`, producto.id), {
+              category: nombreNuevo
+            })
+          })
+      }
+
+      await batch.commit()
+    } else {
+      await addDoc(collection(db, `locales/${localId.value}/categorias`), payload)
+    }
+
+    resetCategoriaForm()
+  } catch { alert('Error al guardar la categoría.') }
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
@@ -713,11 +806,13 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">🪑 Sala</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
         <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">👥 Empleados</button>
-        <button :class="{ active: currentTab === 'registro' }" @click="currentTab = 'registro'">🧾 Registro</button>
       </nav>
 
       <div class="sidebar-footer">
         <div class="local-info">🏢 {{ localId }}</div>
+        <div class="sidebar-powered">
+          <PoweredByEasyOrder compact tone="dark" />
+        </div>
         <button class="btn-logout" @click="handleLogout">⬅ Cerrar sesión</button>
       </div>
     </aside>
@@ -898,7 +993,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
         <div class="dos-columnas">
           <div class="form-card">
-            <h3 class="form-card-title">Nuevo plato</h3>
+            <h3 class="form-card-title">{{ editandoProductoId ? 'Editar plato' : 'Nuevo plato' }}</h3>
             <div v-if="categorias.length === 0" class="empty-state-box">
               ⚠️ Crea primero una categoría en "Gestionar Categorías".
             </div>
@@ -946,7 +1041,14 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 </div>
                 <p v-else class="field-hint">Opcional. Se guardará junto al producto para usarla luego en el menú o la app.</p>
               </div>
-              <button @click="guardarProducto" class="btn-primary btn-full">+ Guardar en el Menú</button>
+              <div class="form-actions-stacked">
+                <button @click="guardarProducto" class="btn-primary btn-full">
+                  {{ editandoProductoId ? 'Guardar cambios' : '+ Guardar en el Menú' }}
+                </button>
+                <button v-if="editandoProductoId" @click="resetProductoForm" class="btn-secondary btn-full">
+                  Cancelar edición
+                </button>
+              </div>
             </div>
           </div>
 
@@ -968,7 +1070,10 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                   <span class="item-name">{{ p.name }}</span>
                 </div>
                 <span class="item-price">{{ Number(p.price).toFixed(2) }}€</span>
-                <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
+                <div class="item-actions">
+                  <button class="btn-editar" @click="editarProducto(p)">✎</button>
+                  <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1061,45 +1166,6 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 {{ emp.activo ? '● Activo' : '○ Inactivo' }}
               </button>
               <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── TAB: REGISTRO (HISTORIAL) ── -->
-      <div v-if="currentTab === 'registro'">
-        <div class="page-header">
-          <div>
-            <h1>Registro de Servicios</h1>
-            <p class="page-subtitle">{{ facturas.length }} tickets cerrados</p>
-          </div>
-        </div>
-
-        <div class="productos-lista">
-          <h3>Historial de Tickets</h3>
-          <div v-if="facturas.length === 0" class="empty-productos">
-            No hay facturas registradas todavía.
-          </div>
-          <div v-for="factura in facturas" :key="factura.id" class="factura-row">
-            <div class="factura-info">
-              <span class="factura-fecha">
-                🔴 Cerrada: {{ factura.fechaCierre?.toDate ? factura.fechaCierre.toDate().toLocaleString() : 'Desconocida' }}
-              </span>
-              <span class="factura-fecha-apertura" v-if="factura.fechaApertura">
-                🟢 Abierta: {{ factura.fechaApertura?.toDate ? factura.fechaApertura.toDate().toLocaleString() : 'Desconocida' }}
-              </span>
-              <span class="factura-mesa">Mesa {{ factura.mesa }} ({{ factura.zona }})</span>
-              <span class="factura-camarero">🧑‍🍳 Atendido por: {{ factura.camareroEmail }}</span>
-            </div>
-            <div class="factura-items">
-              <ul>
-                <li v-for="(item, idx) in factura.items" :key="idx">
-                  {{ item.quantity }}x {{ item.name }} ({{ item.price }}€)
-                </li>
-              </ul>
-            </div>
-            <div class="factura-total">
-              <span class="total-text">{{ factura.total.toFixed(2) }}€</span>
             </div>
           </div>
         </div>
@@ -1255,7 +1321,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
           <div class="modal-body">
             <div class="dos-columnas">
               <div class="form-card">
-                <h3 class="form-card-title">Nueva categoría</h3>
+                <h3 class="form-card-title">{{ editandoCategoriaId ? 'Editar categoría' : 'Nueva categoría' }}</h3>
                 <div class="form-fields">
                   <div class="field-group">
                     <label>Nombre</label>
@@ -1288,7 +1354,14 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                     </div>
                     <p v-else class="field-hint">Opcional. Puedes guardar una imagen representativa de la categoría.</p>
                   </div>
-                  <button @click="guardarCategoria" class="btn-primary btn-full">+ Añadir Categoría</button>
+                  <div class="form-actions-stacked">
+                    <button @click="guardarCategoria" class="btn-primary btn-full">
+                      {{ editandoCategoriaId ? 'Guardar cambios' : '+ Añadir Categoría' }}
+                    </button>
+                    <button v-if="editandoCategoriaId" @click="resetCategoriaForm" class="btn-secondary btn-full">
+                      Cancelar edición
+                    </button>
+                  </div>
                 </div>
               </div>
               <div class="lista-card">
@@ -1303,7 +1376,10 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                     <span class="item-name">{{ cat.nombre }}</span>
                     <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
                   </div>
-                  <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
+                  <div class="item-actions">
+                    <button class="btn-editar" @click="editarCategoria(cat)">✎</button>
+                    <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1399,9 +1475,15 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .sidebar-footer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
   padding-top: 12px;
   border-top: 1px solid #334155;
+}
+
+.sidebar-powered {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
 }
 
 .local-info { font-size: 0.72rem; color: #64748b; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1461,6 +1543,23 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 .btn-full { width: 100%; padding: 14px; font-size: 0.95rem; }
 
+.btn-secondary {
+  background: white;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
 .btn-danger {
   background: #dc2626;
   color: white;
@@ -1507,6 +1606,25 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 }
 
 .btn-eliminar:hover { background: #dc2626; color: white; }
+
+.btn-editar {
+  width: 30px;
+  height: 30px;
+  background: #e0e7ff;
+  color: #4338ca;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-editar:hover { background: #4338ca; color: white; }
 
 .btn-text-danger {
   background: transparent;
@@ -1735,6 +1853,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .field-group select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
 
 .two-cols-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.form-actions-stacked { display: flex; flex-direction: column; gap: 8px; }
 
 /* ── ITEMS ── */
 .item-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
@@ -1779,6 +1898,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
 .item-sub { font-size: 0.78rem; color: #94a3b8; }
 .item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
+.item-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
 /* ── MENÚ CATEGORÍAS ── */
 .categoria-grupo { margin-bottom: 6px; }

@@ -7,6 +7,7 @@ import {
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 import { useNegocio } from '../composables/useNegocio'
+import PoweredByEasyOrder from '../components/branding/PoweredByEasyOrder.vue'
 
 interface LineaPedido {
   productoId: string
@@ -188,7 +189,6 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
         </div>
 
         <h1 class="dashboard-title">{{ negocio.nombreNegocio || 'Cocina' }}</h1>
-        <span class="brand-tag" :style="{ background: colorAcento }">EasyOrder</span>
       </div>
 
       <div class="top-bar-center">
@@ -208,6 +208,7 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
       <div class="top-bar-right">
         <span class="clock">{{ horaActual }}</span>
         <span class="user-name">{{ currentUser?.email?.split('@')[0] }}</span>
+        <PoweredByEasyOrder tone="dark" compact />
         <button class="btn-logout" @click="logout">Salir</button>
       </div>
     </header>
@@ -379,15 +380,6 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 }
 
 .dashboard-title { font-size: 1.1rem; font-weight: 700; color: #f8fafc; }
-
-.brand-tag {
-  color: white;
-  padding: 2px 8px;
-  border-radius: 20px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  transition: background 0.3s;
-}
 
 .top-bar-center { flex: 1; display: flex; justify-content: center; }
 

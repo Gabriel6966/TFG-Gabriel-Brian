@@ -142,9 +142,6 @@ onMounted(() => {
 
   const qMesas = query(collection(db, `locales/${localId.value}/mesas`), orderBy('numero'))
   unsubscribeMesas = onSnapshot(qMesas, (snapshot) => {
-    const storageKey = `posicionesMesas_${localId.value}`
-    const posicionesGuardadas = JSON.parse(localStorage.getItem(storageKey) || '{}')
-
     tables.value = snapshot.docs.map(d => {
       const data = d.data()
       return {
@@ -154,8 +151,8 @@ onMounted(() => {
         capacity: data.capacidad ?? 4,
         status: data.estado === 'libre' ? 'available' : data.estado === 'preparando' ? 'preparing' : 'occupied',
         zona: data.zona,
-        x: posicionesGuardadas[d.id]?.x,
-        y: posicionesGuardadas[d.id]?.y
+        x: data.x,
+        y: data.y
       }
     })
   })
@@ -191,7 +188,7 @@ onMounted(() => {
         notificaciones.value.push({
           id: comanda.id,
           mesaNumero: comanda.mesaNumero || 0,
-          texto: `Mesa ${comanda.mesaNumero || '?'} â€” Pedido listo para recoger`,
+          texto: `Mesa ${comanda.mesaNumero || '?'} - Pedido listo para recoger`,
           comandaId: comanda.id,
           mesaId: comanda.mesaId || ''
         })
@@ -306,11 +303,6 @@ const openTable = (table: any) => {
 }
 
 const actualizarPosicionMesa = (id: string, x: number, y: number) => {
-  if (!localId.value) return
-  const storageKey = `posicionesMesas_${localId.value}`
-  const posicionesGuardadas = JSON.parse(localStorage.getItem(storageKey) || '{}')
-  posicionesGuardadas[id] = { x, y }
-  localStorage.setItem(storageKey, JSON.stringify(posicionesGuardadas))
   const tableIndex = tables.value.findIndex(t => t.id === id)
   if (tableIndex !== -1) {
     tables.value[tableIndex].x = x
@@ -346,7 +338,7 @@ const abrirModalFactura = () => {
 const guardarCopiaYFinalizar = async () => {
   if (!mesaIdTicket.value || !localId.value || !currentUser.value) return
   const mesaALiberar = tables.value.find(t => t.id === mesaIdTicket.value)
-  if (!mesaALiberar) return alert('Seleccione una mesa vÃ¡lida.')
+  if (!mesaALiberar) return alert('Seleccione una mesa válida.')
   const consumoTotal = cuentaFinalMesa.value
 
   try {
@@ -395,7 +387,7 @@ const guardarCopiaYFinalizar = async () => {
 }
 
 const enviarPedido = async () => {
-  if (cartStore.items.length === 0) return alert('El pedido estÃ¡ vacÃ­o')
+  if (cartStore.items.length === 0) return alert('El pedido está vacío')
   if (!mesaSeleccionadaId.value || !currentUser.value || !localId.value) return
 
   isEnviando.value = true
@@ -518,7 +510,7 @@ const enviarPedido = async () => {
             <div v-if="mesaSeleccionada" class="menu-overlay-panel">
               <div class="menu-header">
                 <h3>Comandar Mesa {{ mesaSeleccionada }}</h3>
-                <button class="btn-close-menu" @click="openTable({ nr: mesaSeleccionada })">âœ• Cerrar</button>
+                <button class="btn-close-menu" @click="openTable({ nr: mesaSeleccionada })">✕ Cerrar</button>
               </div>
               <nav class="categories-tabs">
                 <button
@@ -540,11 +532,11 @@ const enviarPedido = async () => {
                 >
                   <div class="product-media">
                     <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="product-photo">
-                    <div v-else class="product-img">{{ p.icon || 'ðŸ”' }}</div>
+                    <div v-else class="product-img">{{ p.icon || '🍔' }}</div>
                   </div>
                   <div class="product-info">
                     <h4>{{ p.name }}</h4>
-                    <p class="price" :style="{ color: negocio.colorAcento || '#4f46e5' }">{{ p.price }}â‚¬</p>
+                    <p class="price" :style="{ color: negocio.colorAcento || '#4f46e5' }">{{ p.price }}€</p>
                   </div>
                 </div>
               </div>
@@ -584,20 +576,20 @@ const enviarPedido = async () => {
 
             <div class="ticket-divider"></div>
             <div class="metodo-pago-group">
-              <label class="metodo-label">MÃ‰TODO DE PAGO:</label>
+              <label class="metodo-label">MÉTODO DE PAGO:</label>
               <div class="metodo-btns">
                 <button
                   class="btn-metodo"
                   :class="{ active: metodoPago === 'efectivo' }"
                   :style="metodoPago === 'efectivo' ? { borderColor: negocio.colorAcento, background: `${negocio.colorAcento}15`, color: negocio.colorAcento } : {}"
                   @click="metodoPago = 'efectivo'"
-                >ðŸ’µ Efectivo</button>
+                >💵 Efectivo</button>
                 <button
                   class="btn-metodo"
                   :class="{ active: metodoPago === 'tarjeta' }"
                   :style="metodoPago === 'tarjeta' ? { borderColor: negocio.colorAcento, background: `${negocio.colorAcento}15`, color: negocio.colorAcento } : {}"
                   @click="metodoPago = 'tarjeta'"
-                >ðŸ’³ Tarjeta</button>
+                >💳 Tarjeta</button>
               </div>
             </div>
 
@@ -607,7 +599,7 @@ const enviarPedido = async () => {
               <div v-for="item in cuentaFinalMesa.items" :key="item.productoId" class="t-item">
                 <span class="t-qty">{{ item.cantidad }}x</span>
                 <span class="t-name">{{ item.nombre }}</span>
-                <span class="t-price">{{ (item.precio * item.cantidad).toFixed(2) }}â‚¬</span>
+                <span class="t-price">{{ (item.precio * item.cantidad).toFixed(2) }}€</span>
               </div>
             </div>
             <div v-else class="ticket-empty">(La mesa no tiene consumo registrado)</div>
@@ -616,7 +608,7 @@ const enviarPedido = async () => {
 
             <div class="ticket-total">
               <span>TOTAL</span>
-              <span>{{ cuentaFinalMesa.total.toFixed(2) }}â‚¬</span>
+              <span>{{ cuentaFinalMesa.total.toFixed(2) }}€</span>
             </div>
           </div>
 
@@ -628,7 +620,7 @@ const enviarPedido = async () => {
               @click="guardarCopiaYFinalizar"
               :disabled="!mesaIdTicket"
             >
-              ðŸ’³ Cobrar y Liberar Mesa
+              💳 Cobrar y Liberar Mesa
             </button>
           </div>
         </div>
@@ -640,7 +632,7 @@ const enviarPedido = async () => {
       <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
         <div class="monitor-modal">
           <div class="monitor-header">
-            <h2>ðŸ“º Estado de Pedidos en Tiempo Real</h2>
+            <h2>📺 Estado de Pedidos en Tiempo Real</h2>
             <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
               Cerrar
             </button>
@@ -658,7 +650,7 @@ const enviarPedido = async () => {
                 @click="mesaMonitorSeleccionada = mesa.id"
               >
                 <span>Mesa {{ mesa.numero }}</span>
-                <span v-if="mesa.tieneListos" class="badge-listo">âœ“ LISTO</span>
+                <span v-if="mesa.tieneListos" class="badge-listo">✓ LISTO</span>
                 <br>
                 <small style="font-weight: 500; opacity: 0.85;">{{ mesa.zona }}</small>
               </button>
@@ -681,7 +673,7 @@ const enviarPedido = async () => {
                   :class="{ 'comanda-lista': comanda.estado === 'listo' }"
                 >
                   <div class="c-header">
-                    <span class="c-time">ðŸ• {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
+                    <span class="c-time">🕐 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
                     <span class="c-status" :class="comanda.estado.toLowerCase().replace(/[\s_]+/g, '-')">
                       {{ comanda.estado.replace(/_/g, ' ').toUpperCase() }}
                     </span>
@@ -697,7 +689,7 @@ const enviarPedido = async () => {
                       :style="{ background: negocio.colorAcento || '#16a34a' }"
                       @click="marcarComoEntregada(comanda.id, comanda.mesaId)"
                     >
-                      âœ“ Marcar como Servido
+                      ✓ Marcar como Servido
                     </button>
                   </div>
                 </div>
