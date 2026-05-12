@@ -1421,7 +1421,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
     <!-- ══ MODAL: CATEGORÍAS ══ -->
     <transition name="fade">
       <div v-if="mostrarModalCategorias" class="modal-backdrop" @click.self="mostrarModalCategorias = false">
-        <div class="modal-content modal-sm">
+        <div class="modal-content modal-sm modal-categorias">
           <div class="modal-header">
             <h2>Gestionar Categorías</h2>
             <button class="btn-close" @click="mostrarModalCategorias = false">✕</button>
@@ -2411,6 +2411,18 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 }
 
 .modal-sm { width: 700px; }
+.modal-categorias {
+  width: 1080px;
+  max-width: 98vw;
+}
+
+.modal-categorias .dos-columnas {
+  grid-template-columns: 360px minmax(0, 1fr);
+}
+
+.modal-categorias .modal-body {
+  overflow-x: hidden;
+}
 
 .modal-header {
   display: flex;
@@ -2591,11 +2603,15 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 @media (max-width: 1100px) {
   .dos-columnas { grid-template-columns: 1fr; }
   .form-card { position: static; }
+  .modal-categorias .dos-columnas { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {
   .content { padding: 20px; }
   .modal-content { width: 95%; }
+  .modal-categorias { width: 96%; }
+  .categoria-list-toolbar { align-items: stretch; flex-direction: column; }
+  .category-sort-select { width: 100%; }
   .modal-ticket { width: 95%; }
   .tickets-grid { grid-template-columns: 1fr; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
