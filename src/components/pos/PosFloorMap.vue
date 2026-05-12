@@ -16,6 +16,7 @@ const emit = defineEmits<{
   (e: 'select-table', table: any): void
   (e: 'update-position', id: string, x: number, y: number): void
   (e: 'cobrar-mesa', id: string): void
+  (e: 'comenzar-pedido', table: any): void
 }>()
 
 // ── ELEMENTOS DECORATIVOS ─────────────────────────────────────────
@@ -333,15 +334,21 @@ const stopDrag = () => {
               </span>
             </div>
             <div class="fc-details" style="text-align: center;">
-              <p v-if="table.status === 'available'" class="fc-mensaje">
+              <p class="fc-mensaje">
                 Añade productos en el panel derecho para comandar.
               </p>
               <button
-                v-else
+                v-if="table.status !== 'available'"
                 class="btn-cobro-rapido"
                 @click.stop="emit('cobrar-mesa', table.id)"
               >
                 💳 Cobrar y Liberar
+              </button>
+              <button
+                class="btn-comenzar-pedido"
+                @click.stop="emit('comenzar-pedido', table)"
+              >
+                Comenzar pedido
               </button>
             </div>
             <div class="fc-arrow"></div>
@@ -539,6 +546,24 @@ const stopDrag = () => {
 
 .btn-cobro-rapido:hover {
   background: #15803d;
+  transform: translateY(-1px);
+}
+
+.btn-comenzar-pedido {
+  width: 100%;
+  background: #0f172a;
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-comenzar-pedido:hover {
+  background: #1e293b;
   transform: translateY(-1px);
 }
 </style>
