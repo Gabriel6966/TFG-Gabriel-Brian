@@ -1152,8 +1152,14 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
             </div>
           </div>
 
-          <div class="lista-card">
-            <h3 class="form-card-title">Carta actual</h3>
+          <div class="lista-card carta-card">
+            <div class="carta-title-row">
+              <div>
+                <h3 class="form-card-title">Carta actual</h3>
+                <p class="carta-subtitle">Vista organizada por categorías</p>
+              </div>
+              <span class="carta-total">{{ productos.length }} platos</span>
+            </div>
             <div v-if="productos.length === 0" class="empty-state-box">No hay productos todavía.</div>
             <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
               <div class="categoria-header">
@@ -1169,18 +1175,23 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
-              <div v-for="p in platos" :key="p.id" class="item-row">
-                <div class="producto-visual">
-                  <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="producto-thumb">
-                  <span v-else class="item-icon">{{ p.icon }}</span>
-                </div>
-                <div class="item-info">
-                  <span class="item-name">{{ p.name }}</span>
-                </div>
-                <span class="item-price">{{ Number(p.price).toFixed(2) }}€</span>
-                <div class="item-actions">
-                  <button class="btn-editar" @click="editarProducto(p)">✎</button>
-                  <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)">✕</button>
+              <div class="menu-platos-grid">
+                <div v-for="p in platos" :key="p.id" class="menu-plato-card">
+                  <div class="menu-plato-media">
+                    <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name" class="menu-plato-photo">
+                    <span v-else class="menu-plato-icon">{{ p.icon }}</span>
+                  </div>
+                  <div class="menu-plato-info">
+                    <span class="menu-plato-name">{{ p.name }}</span>
+                    <span class="menu-plato-category">{{ categoria }}</span>
+                  </div>
+                  <div class="menu-plato-footer">
+                    <span class="menu-plato-price">{{ Number(p.price).toFixed(2) }}€</span>
+                    <div class="item-actions">
+                      <button class="btn-editar" @click="editarProducto(p)" title="Editar plato">✎</button>
+                      <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)" title="Eliminar plato">✕</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2061,13 +2072,146 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
   box-shadow: 0 0 0 3px rgba(79,70,229,0.08);
 }
 
+/* ── CARTA ACTUAL ── */
+.carta-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.92)),
+    repeating-linear-gradient(0deg, rgba(226,232,240,0.28) 0 1px, transparent 1px 26px);
+}
+
+.carta-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 18px;
+}
+
+.carta-title-row .form-card-title { margin-bottom: 4px; }
+
+.carta-subtitle {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.carta-total {
+  background: #0f172a;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.menu-platos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+  padding: 14px 0 6px;
+}
+
+.menu-plato-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 12px;
+  padding: 12px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+}
+
+.menu-plato-card:hover {
+  transform: translateY(-2px);
+  border-color: #cbd5e1;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.menu-plato-media {
+  grid-row: 1 / span 2;
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.menu-plato-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.menu-plato-icon {
+  font-size: 2rem;
+}
+
+.menu-plato-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+
+.menu-plato-name {
+  color: #0f172a;
+  font-size: 0.96rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.menu-plato-category {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.menu-plato-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  align-self: end;
+}
+
+.menu-plato-price {
+  color: #4f46e5;
+  font-size: 1rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 /* ── MENÚ CATEGORÍAS ── */
-.categoria-grupo { margin-bottom: 6px; }
-.categoria-header { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; border-bottom: 2px solid #f1f5f9; margin-bottom: 4px; margin-top: 16px; }
+.categoria-grupo { margin-bottom: 24px; }
+.categoria-grupo:last-child { margin-bottom: 0; }
+.categoria-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #ffffff, #f8fafc);
+  border: 1px solid #dbe3ee;
+  border-left: 5px solid #4f46e5;
+  border-radius: 14px;
+  margin-top: 18px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
 .categoria-visual {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   display: flex;
@@ -2083,8 +2227,8 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
   object-fit: cover;
 }
 
-.categoria-icono { font-size: 1.1rem; }
-.categoria-nombre { font-weight: 700; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0; font-size: 0.78rem; }
+.categoria-icono { font-size: 1.55rem; }
+.categoria-nombre { font-weight: 900; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0; font-size: 1.08rem; }
 .categoria-count { background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
 
 .btn-reorder {
@@ -2612,6 +2756,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
   .modal-categorias { width: 96%; }
   .categoria-list-toolbar { align-items: stretch; flex-direction: column; }
   .category-sort-select { width: 100%; }
+  .menu-platos-grid { grid-template-columns: 1fr; }
   .modal-ticket { width: 95%; }
   .tickets-grid { grid-template-columns: 1fr; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
@@ -2620,5 +2765,22 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 @media (max-width: 600px) {
   .kpi-grid { grid-template-columns: 1fr; }
   .finanzas-filtros { flex-direction: column; }
+  .menu-plato-card {
+    grid-template-columns: 60px minmax(0, 1fr);
+  }
+
+  .menu-plato-media {
+    width: 60px;
+    height: 60px;
+  }
+
+  .carta-title-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .carta-total {
+    width: fit-content;
+  }
 }
 </style>
