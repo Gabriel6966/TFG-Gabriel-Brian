@@ -48,6 +48,9 @@ interface Categoria {
   nombre: string
   icono: string
   imageUrl?: string
+  orderIndex?: number
+  createdAt?: any
+  updatedAt?: any
 }
 
 interface Zona {
@@ -134,6 +137,7 @@ const facturaSeleccionada = ref<Factura | null>(null)
 const nuevoItemSeleccionado = ref('')
 const subiendoFotoProducto = ref(false)
 const subiendoFotoCategoria = ref(false)
+const ordenCategorias = ref<'manual' | 'alfabetico' | 'alfabeticoDesc' | 'actualizacion' | 'productos' | 'bebidas'>('manual')
 
 const CLOUDINARY_CLOUD = 'dnlcwm5x9'
 const CLOUDINARY_PRESET = 'easyorder_uploads'
@@ -233,7 +237,7 @@ const mesasParaMapa = computed(() =>
 // ── COMPUTED: MENÚ ──
 const productosPorCategoria = computed(() => {
   const grupos: Record<string, Producto[]> = {}
-  for (const cat of categorias.value) {
+  for (const cat of categoriasOrdenadas.value) {
     grupos[cat.nombre] = productos.value.filter(p => p.category === cat.nombre)
   }
   const sinCategoria = productos.value.filter(
@@ -241,6 +245,66 @@ const productosPorCategoria = computed(() => {
   )
   if (sinCategoria.length > 0) grupos['Sin categoría'] = sinCategoria
   return grupos
+})
+
+const obtenerCategoria = (nombre: string) =>
+  categorias.value.find(c => c.nombre === nombre)
+
+const contarProductosCategoria = (nombre: string) =>
+  productos.value.filter(p => p.category === nombre).length
+
+const fechaCategoriaMs = (cat: Categoria) => {
+  const fecha = cat.updatedAt || cat.createdAt
+  if (!fecha) return 0
+  if (typeof fecha.toMillis === 'function') return fecha.toMillis()
+  if (typeof fecha.seconds === 'number') return fecha.seconds * 1000
+  if (fecha instanceof Date) return fecha.getTime()
+  const parsed = new Date(fecha).getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const esCategoriaBebida = (cat: Categoria) => {
+  const texto = cat.nombre
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  return ['bebida', 'bebidas', 'drink', 'drinks', 'bar', 'vino', 'cerveza', 'refresco', 'coctel'].some(
+    palabra => texto.includes(palabra)
+  )
+}
+
+const categoriasOrdenadas = computed(() => {
+  const base = categorias.value.map((cat, index) => ({ cat, index }))
+
+  return base
+    .sort((a, b) => {
+      if (ordenCategorias.value === 'alfabetico') {
+        return a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'alfabeticoDesc') {
+        return b.cat.nombre.localeCompare(a.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'actualizacion') {
+        return fechaCategoriaMs(b.cat) - fechaCategoriaMs(a.cat)
+      }
+
+      if (ordenCategorias.value === 'productos') {
+        return contarProductosCategoria(b.cat.nombre) - contarProductosCategoria(a.cat.nombre)
+          || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+      }
+
+      if (ordenCategorias.value === 'bebidas') {
+        return Number(esCategoriaBebida(b.cat)) - Number(esCategoriaBebida(a.cat))
+          || (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+      }
+
+      return (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+        || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+    })
+    .map(({ cat }) => cat)
 })
 
 // ── CARGA DE DATOS ──
@@ -626,7 +690,8 @@ const guardarCategoria = async () => {
     const payload = {
       nombre: nombreNuevo,
       icono: nuevaCategoria.value.icono || '🍽️',
-      imageUrl: nuevaCategoria.value.imageUrl || ''
+      imageUrl: nuevaCategoria.value.imageUrl || '',
+      updatedAt: new Date()
     }
 
     if (editandoCategoriaId.value) {
@@ -645,11 +710,46 @@ const guardarCategoria = async () => {
 
       await batch.commit()
     } else {
-      await addDoc(collection(db, `locales/${localId.value}/categorias`), payload)
+      const siguienteOrden = Math.max(
+        -1,
+        ...categorias.value.map(c => typeof c.orderIndex === 'number' ? c.orderIndex : -1)
+      ) + 1
+
+      await addDoc(collection(db, `locales/${localId.value}/categorias`), {
+        ...payload,
+        orderIndex: siguienteOrden,
+        createdAt: new Date()
+      })
     }
 
     resetCategoriaForm()
   } catch { alert('Error al guardar la categoría.') }
+}
+
+const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
+  if (!localId.value) return
+
+  const lista = [...categoriasOrdenadas.value]
+  const indiceActual = lista.findIndex(c => c.id === cat.id)
+  const nuevoIndice = indiceActual + direccion
+
+  if (indiceActual < 0 || nuevoIndice < 0 || nuevoIndice >= lista.length) return
+
+  const [categoriaMovida] = lista.splice(indiceActual, 1)
+  lista.splice(nuevoIndice, 0, categoriaMovida)
+
+  try {
+    ordenCategorias.value = 'manual'
+    await Promise.all(
+      lista.map((categoria, index) =>
+        updateDoc(doc(db, `locales/${localId.value}/categorias`, categoria.id), {
+          orderIndex: index
+        })
+      )
+    )
+  } catch {
+    alert('Error al reordenar las categorías.')
+  }
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
@@ -1057,7 +1157,15 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
             <div v-if="productos.length === 0" class="empty-state-box">No hay productos todavía.</div>
             <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
               <div class="categoria-header">
-                <span class="categoria-icono">{{ categorias.find(c => c.nombre === categoria)?.icono ?? '🍽️' }}</span>
+                <div class="categoria-visual">
+                  <img
+                    v-if="obtenerCategoria(categoria)?.imageUrl"
+                    :src="obtenerCategoria(categoria)?.imageUrl"
+                    :alt="categoria"
+                    class="categoria-thumb"
+                  >
+                  <span v-else class="categoria-icono">{{ obtenerCategoria(categoria)?.icono ?? '🍽️' }}</span>
+                </div>
                 <span class="categoria-nombre">{{ categoria }}</span>
                 <span class="categoria-count">{{ platos.length }}</span>
               </div>
@@ -1365,18 +1473,44 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 </div>
               </div>
               <div class="lista-card">
-                <h3 class="form-card-title">Categorías actuales</h3>
+                <div class="categoria-list-toolbar">
+                  <h3 class="form-card-title">Categorías actuales</h3>
+                  <select v-model="ordenCategorias" class="category-sort-select" aria-label="Ordenar categorías">
+                    <option value="manual">Orden personalizado</option>
+                    <option value="alfabetico">A-Z</option>
+                    <option value="alfabeticoDesc">Z-A</option>
+                    <option value="actualizacion">Última actualización</option>
+                    <option value="productos">Más productos</option>
+                    <option value="bebidas">Bebidas primero</option>
+                  </select>
+                </div>
                 <div v-if="categorias.length === 0" class="empty-state-box">No hay categorías todavía.</div>
-                <div v-for="cat in categorias" :key="cat.id" class="item-row">
+                <div v-for="(cat, index) in categoriasOrdenadas" :key="cat.id" class="item-row">
                   <div class="producto-visual">
                     <img v-if="cat.imageUrl" :src="cat.imageUrl" :alt="cat.nombre" class="producto-thumb">
                     <span v-else class="item-icon">{{ cat.icono }}</span>
                   </div>
                   <div class="item-info">
                     <span class="item-name">{{ cat.nombre }}</span>
-                    <span class="item-sub">{{ productos.filter(p => p.category === cat.nombre).length }} productos</span>
+                    <span class="item-sub">{{ contarProductosCategoria(cat.nombre) }} productos</span>
                   </div>
                   <div class="item-actions">
+                    <button
+                      class="btn-reorder"
+                      :disabled="index === 0"
+                      title="Subir categoría"
+                      @click="moverCategoria(cat, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      class="btn-reorder"
+                      :disabled="index === categoriasOrdenadas.length - 1"
+                      title="Bajar categoría"
+                      @click="moverCategoria(cat, 1)"
+                    >
+                      ↓
+                    </button>
                     <button class="btn-editar" @click="editarCategoria(cat)">✎</button>
                     <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
                   </div>
@@ -1900,12 +2034,86 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
 .item-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
+.categoria-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.categoria-list-toolbar .form-card-title { margin-bottom: 0; }
+
+.category-sort-select {
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  color: #0f172a;
+  font-size: 0.85rem;
+  font-weight: 600;
+  outline: none;
+}
+
+.category-sort-select:focus {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.08);
+}
+
 /* ── MENÚ CATEGORÍAS ── */
 .categoria-grupo { margin-bottom: 6px; }
 .categoria-header { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; border-bottom: 2px solid #f1f5f9; margin-bottom: 4px; margin-top: 16px; }
+.categoria-visual {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.categoria-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .categoria-icono { font-size: 1.1rem; }
-.categoria-nombre { font-weight: 700; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.78rem; }
+.categoria-nombre { font-weight: 700; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0; font-size: 0.78rem; }
 .categoria-count { background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+
+.btn-reorder {
+  width: 30px;
+  height: 30px;
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-reorder:hover:not(:disabled) {
+  background: #e0e7ff;
+  color: #4338ca;
+  border-color: #c7d2fe;
+}
+
+.btn-reorder:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* ── EMPLEADOS ── */
 .empleado-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
