@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useNegocio } from '../../composables/useNegocio'
+import PoweredByEasyOrder from '../branding/PoweredByEasyOrder.vue'
 
 const props = defineProps<{
   userEmail?: string
@@ -67,7 +68,6 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
           <div class="brand-texts">
             <span class="brand-nombre">{{ negocio.nombreNegocio || 'EasyOrder' }}</span>
-            <span class="brand-powered">powered by EasyOrder</span>
           </div>
         </div>
       </div>
@@ -179,8 +179,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
     <!-- ── POWERED BY (abajo del todo) ── -->
     <div class="sidebar-bottom">
-      <span class="powered-text">powered by</span>
-      <span class="powered-brand">EasyOrder</span>
+      <PoweredByEasyOrder compact />
     </div>
 
   </div>
@@ -253,12 +252,6 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.brand-powered {
-  font-size: 0.62rem;
-  color: #94a3b8;
-  font-weight: 500;
 }
 
 /* ── INFO EMPLEADO ── */
@@ -467,15 +460,12 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 /* ── POWERED BY ── */
 .sidebar-bottom {
-  padding: 10px 20px;
+  padding: 12px 20px;
   border-top: 1px solid #f1f5f9;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
   flex-shrink: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, #f8fafc 100%);
 }
-
-.powered-text  { font-size: 0.65rem; color: #cbd5e1; font-weight: 400; }
-.powered-brand { font-size: 0.7rem;  color: #94a3b8;  font-weight: 700; letter-spacing: 0.5px; }
 </style>
