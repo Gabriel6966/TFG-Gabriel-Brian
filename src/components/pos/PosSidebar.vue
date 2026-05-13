@@ -77,7 +77,6 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
       <div class="user-details">
         <div class="info">
           <span class="role">Camarero</span>
-          <span class="local-badge">{{ localId || 'LOCAL' }}</span>
         </div>
         <button class="btn-logout" @click="emit('logout')">Cerrar<br>sesion</button>
       </div>
