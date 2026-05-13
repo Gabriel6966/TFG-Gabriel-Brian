@@ -3,6 +3,7 @@ $files = @(
     "src/main.ts",
     "src/router/index.ts",
     "src/composables/useAuth.ts",
+    "src/composables/useNegocio.ts",
     "src/stores/cart.ts",
     "src/components/pos/PosFloorMap.vue",
     "src/components/pos/PosOrderPanel.vue",

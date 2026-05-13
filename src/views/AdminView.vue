@@ -10,8 +10,10 @@ import { useNegocio } from '../composables/useNegocio'
 import EmojiPicker from 'vue3-emoji-picker'
 import FloorEditor from '../components/pos/FloorEditor.vue'
 import PoweredByEasyOrder from '../components/branding/PoweredByEasyOrder.vue'
+import emailjs from '@emailjs/browser'
 
-// --- Interfaces TypeScript ---
+// ── INTERFACES ────────────────────────────────────────────────────
+
 interface Mesa {
   id: string
   numero: number
@@ -23,17 +25,6 @@ interface Mesa {
   y?: number
 }
 
-interface Factura {
-  id: string
-  mesa: number
-  zona: string
-  camareroEmail: string
-  fechaApertura?: any
-  fechaCierre: any
-  total: number
-  items: any[]
-}
-
 interface Producto {
   id: string
   name: string
@@ -41,6 +32,7 @@ interface Producto {
   category: string
   icon: string
   imageUrl?: string
+  sirveCamarero?: boolean
 }
 
 interface Categoria {
@@ -91,8 +83,12 @@ interface Factura {
   items: any[]
 }
 
+// ── AUTH & NEGOCIO ────────────────────────────────────────────────
+
 const { logout, localId } = useAuth()
 const { config: configNegocio, iniciar: iniciarNegocio } = useNegocio()
+
+// ── ESTADO GENERAL ────────────────────────────────────────────────
 
 const currentTab = ref('finanzas')
 const mesas = ref<Mesa[]>([])
@@ -102,21 +98,21 @@ const zonas = ref<Zona[]>([])
 const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
 const facturas = ref<Factura[]>([])
-
-
-
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
 
-// ── FILTROS ──
+// ── FILTROS ───────────────────────────────────────────────────────
+
 const filtroRol = ref('todos')
+const filtroEstado = ref('todos')
 const filtroFecha = ref(new Date().toISOString().split('T')[0])
 const finanzasSubTab = ref('tickets')
 const filtroFEmpleado = ref('todos')
 const filtroFPago = ref('todos')
 
-// ── MODALES ──
+// ── MODALES ───────────────────────────────────────────────────────
+
 const mostrarSelectorCategoria = ref(false)
 const mostrarSelectorProducto = ref(false)
 const mostrarSelectorZona = ref(false)
@@ -125,8 +121,16 @@ const mostrarModalCategorias = ref(false)
 const mostrarModalEditarFactura = ref(false)
 const mostrarModalDetalleFactura = ref(false)
 
-// ── FORMULARIOS ──
-const nuevoProducto = ref({ name: '', price: 0, category: '', icon: '🍽️', imageUrl: '' })
+// ── FORMULARIOS ───────────────────────────────────────────────────
+
+const nuevoProducto = ref({
+  name: '',
+  price: 0,
+  category: '',
+  icon: '🍽️',
+  imageUrl: '',
+  sirveCamarero: false
+})
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
 const editandoProductoId = ref<string | null>(null)
 const editandoCategoriaId = ref<string | null>(null)
@@ -139,13 +143,13 @@ const subiendoFotoProducto = ref(false)
 const subiendoFotoCategoria = ref(false)
 const ordenCategorias = ref<'manual' | 'alfabetico' | 'alfabeticoDesc' | 'actualizacion' | 'productos' | 'bebidas'>('manual')
 
-const CLOUDINARY_CLOUD = 'dnlcwm5x9'
-const CLOUDINARY_PRESET = 'easyorder_uploads'
+// ── MAPA ──────────────────────────────────────────────────────────
 
-// ── MAPA ──
 const mesaSeleccionada = ref<number | null>(null)
 const zonaActiva = ref('')
-// ── NEGOCIO ──
+
+// ── NEGOCIO ───────────────────────────────────────────────────────
+
 const configEditando = ref({
   nombreNegocio: '',
   logoUrl: '',
@@ -159,7 +163,11 @@ const COLORES_PRESET = [
   '#0891b2', '#7c3aed', '#db2777', '#0f172a'
 ]
 
-// ── LISTENERS ──
+const CLOUDINARY_CLOUD = 'dnlcwm5x9'
+const CLOUDINARY_PRESET = 'easyorder_uploads'
+
+// ── LISTENERS ────────────────────────────────────────────────────
+
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 let unsubscribeCategorias: (() => void) | null = null
@@ -168,7 +176,8 @@ let unsubscribeInvitaciones: (() => void) | null = null
 let unsubscribeEmpleados: (() => void) | null = null
 let unsubscribeFacturas: (() => void) | null = null
 
-// ── COMPUTED: FINANZAS ──
+// ── COMPUTED: FINANZAS ────────────────────────────────────────────
+
 const totalVentas = computed(() => facturas.value.reduce((acc, f) => acc + f.total, 0))
 const totalEfectivo = computed(() => facturas.value.filter(f => f.metodoPago === 'efectivo').reduce((acc, f) => acc + f.total, 0))
 const totalTarjeta = computed(() => facturas.value.filter(f => f.metodoPago === 'tarjeta').reduce((acc, f) => acc + f.total, 0))
@@ -191,34 +200,26 @@ const facturasFiltradas = computed(() => {
     const matchPago = filtroFPago.value === 'todos' || f.metodoPago === filtroFPago.value
     return matchEmp && matchPago
   })
-
-  // Listener de Registro Histórico (Facturas)
-  const qFacturas = query(
-    collection(db, `locales/${localId.value}/facturas`),
-    orderBy('fechaCierre', 'desc')
-  )
-  unsubscribeFacturas = onSnapshot(qFacturas, (snapshot) => {
-    facturas.value = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Factura[]
-  })
 })
-
-const handleLogout = async () => {
-  // Detenemos los listeners de Firebase ANTES de cerrar sesión
-  unsubscribeMesas?.()
-  unsubscribeProductos?.()
-  unsubscribeCategorias?.()
-  unsubscribeZonas?.()
-  unsubscribeInvitaciones?.()
-  unsubscribeEmpleados?.()
-  unsubscribeFacturas?.()
-  await logout()
-}
 
 const empleadosConVentasDia = computed(() =>
   Array.from(new Set(facturas.value.map(f => f.usuarioNombre))).sort()
 )
 
-// ── COMPUTED: MESAS ──
+// ── COMPUTED: EMPLEADOS ───────────────────────────────────────────
+
+const empleadosFiltrados = computed(() =>
+  empleados.value.filter(e => {
+    const matchRol    = filtroRol.value === 'todos' || e.rol === filtroRol.value
+    const matchEstado = filtroEstado.value === 'todos' ||
+                        (filtroEstado.value === 'activo'   &&  e.activo) ||
+                        (filtroEstado.value === 'inactivo' && !e.activo)
+    return matchRol && matchEstado
+  })
+)
+
+// ── COMPUTED: MESAS ───────────────────────────────────────────────
+
 const mesasFiltradasPorZona = computed(() =>
   mesas.value.filter(m => m.zona === zonaActiva.value || (!m.zona && zonas.value.length === 0))
 )
@@ -234,18 +235,7 @@ const mesasParaMapa = computed(() =>
   }))
 )
 
-// ── COMPUTED: MENÚ ──
-const productosPorCategoria = computed(() => {
-  const grupos: Record<string, Producto[]> = {}
-  for (const cat of categoriasOrdenadas.value) {
-    grupos[cat.nombre] = productos.value.filter(p => p.category === cat.nombre)
-  }
-  const sinCategoria = productos.value.filter(
-    p => !categorias.value.some(c => c.nombre === p.category)
-  )
-  if (sinCategoria.length > 0) grupos['Sin categoría'] = sinCategoria
-  return grupos
-})
+// ── COMPUTED: MENÚ ────────────────────────────────────────────────
 
 const obtenerCategoria = (nombre: string) =>
   categorias.value.find(c => c.nombre === nombre)
@@ -264,11 +254,7 @@ const fechaCategoriaMs = (cat: Categoria) => {
 }
 
 const esCategoriaBebida = (cat: Categoria) => {
-  const texto = cat.nombre
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-
+  const texto = cat.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   return ['bebida', 'bebidas', 'drink', 'drinks', 'bar', 'vino', 'cerveza', 'refresco', 'coctel'].some(
     palabra => texto.includes(palabra)
   )
@@ -276,38 +262,36 @@ const esCategoriaBebida = (cat: Categoria) => {
 
 const categoriasOrdenadas = computed(() => {
   const base = categorias.value.map((cat, index) => ({ cat, index }))
-
-  return base
-    .sort((a, b) => {
-      if (ordenCategorias.value === 'alfabetico') {
-        return a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
-      }
-
-      if (ordenCategorias.value === 'alfabeticoDesc') {
-        return b.cat.nombre.localeCompare(a.cat.nombre, 'es', { sensitivity: 'base' })
-      }
-
-      if (ordenCategorias.value === 'actualizacion') {
-        return fechaCategoriaMs(b.cat) - fechaCategoriaMs(a.cat)
-      }
-
-      if (ordenCategorias.value === 'productos') {
-        return contarProductosCategoria(b.cat.nombre) - contarProductosCategoria(a.cat.nombre)
-          || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
-      }
-
-      if (ordenCategorias.value === 'bebidas') {
-        return Number(esCategoriaBebida(b.cat)) - Number(esCategoriaBebida(a.cat))
-          || (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
-      }
-
-      return (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+  return base.sort((a, b) => {
+    if (ordenCategorias.value === 'alfabetico')
+      return a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+    if (ordenCategorias.value === 'alfabeticoDesc')
+      return b.cat.nombre.localeCompare(a.cat.nombre, 'es', { sensitivity: 'base' })
+    if (ordenCategorias.value === 'actualizacion')
+      return fechaCategoriaMs(b.cat) - fechaCategoriaMs(a.cat)
+    if (ordenCategorias.value === 'productos')
+      return contarProductosCategoria(b.cat.nombre) - contarProductosCategoria(a.cat.nombre)
         || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
-    })
-    .map(({ cat }) => cat)
+    if (ordenCategorias.value === 'bebidas')
+      return Number(esCategoriaBebida(b.cat)) - Number(esCategoriaBebida(a.cat))
+        || (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+    return (a.cat.orderIndex ?? a.index) - (b.cat.orderIndex ?? b.index)
+      || a.cat.nombre.localeCompare(b.cat.nombre, 'es', { sensitivity: 'base' })
+  }).map(({ cat }) => cat)
 })
 
-// ── CARGA DE DATOS ──
+const productosPorCategoria = computed(() => {
+  const grupos: Record<string, Producto[]> = {}
+  for (const cat of categoriasOrdenadas.value) {
+    grupos[cat.nombre] = productos.value.filter(p => p.category === cat.nombre)
+  }
+  const sinCategoria = productos.value.filter(p => !categorias.value.some(c => c.nombre === p.category))
+  if (sinCategoria.length > 0) grupos['Sin categoría'] = sinCategoria
+  return grupos
+})
+
+// ── CARGA DE DATOS ────────────────────────────────────────────────
+
 const cargarFacturas = (fecha: string) => {
   if (!localId.value) return
   if (unsubscribeFacturas) unsubscribeFacturas()
@@ -323,7 +307,6 @@ const cargarFacturas = (fecha: string) => {
 
 watch(filtroFecha, (newFecha) => cargarFacturas(newFecha))
 
-// Sincronizar configEditando con configNegocio cuando cambia
 watch(configNegocio, (val) => {
   configEditando.value = { ...val }
 }, { immediate: true, deep: true })
@@ -332,7 +315,6 @@ onMounted(() => {
   if (!localId.value) return
 
   iniciarNegocio(localId.value)
-
   cargarFacturas(filtroFecha.value)
 
   unsubscribeMesas = onSnapshot(
@@ -390,7 +372,21 @@ onUnmounted(() => {
   unsubscribeFacturas?.()
 })
 
-// ── ACCIONES: NEGOCIO ──
+// ── ACCIONES: LOGOUT ──────────────────────────────────────────────
+
+const handleLogout = async () => {
+  unsubscribeMesas?.()
+  unsubscribeProductos?.()
+  unsubscribeCategorias?.()
+  unsubscribeZonas?.()
+  unsubscribeInvitaciones?.()
+  unsubscribeEmpleados?.()
+  unsubscribeFacturas?.()
+  await logout()
+}
+
+// ── ACCIONES: NEGOCIO ─────────────────────────────────────────────
+
 const guardarConfig = async () => {
   if (!localId.value) return
   guardandoConfig.value = true
@@ -410,17 +406,14 @@ const subirLogo = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length) return
   const file = input.files[0]
-
   if (!file.type.startsWith('image/')) return alert('Solo se permiten imágenes.')
   if (file.size > 2 * 1024 * 1024) return alert('La imagen no puede superar 2MB.')
-
   subiendoLogo.value = true
   try {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('upload_preset', CLOUDINARY_PRESET)
     formData.append('folder', `easyorder/${localId.value}`)
-
     const res = await fetch(
       `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
       { method: 'POST', body: formData }
@@ -434,18 +427,12 @@ const subirLogo = async (e: Event) => {
   }
 }
 
-void COLORES_PRESET
-void guardarConfig
-void subirLogo
+// ── ACCIONES: MAPA ────────────────────────────────────────────────
 
-// ── ACCIONES: MAPA ──
 const handleUpdatePosition = async (id: string, x: number, y: number) => {
   if (!localId.value) return
   const mesa = mesas.value.find(m => m.id === id)
-  if (mesa) {
-    mesa.x = x
-    mesa.y = y
-  }
+  if (mesa) { mesa.x = x; mesa.y = y }
   try {
     await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { x, y })
   } catch {
@@ -457,7 +444,8 @@ const handleSelectTable = (table: any) => {
   mesaSeleccionada.value = table.nr
 }
 
-// ── ACCIONES: MESAS ──
+// ── ACCIONES: MESAS ───────────────────────────────────────────────
+
 const generarMesas = async () => {
   if (!localId.value) return
   if (zonas.value.length === 0) return alert('⚠️ Crea una Zona antes de añadir mesas.')
@@ -465,8 +453,7 @@ const generarMesas = async () => {
   isLoading.value = true
   try {
     const mesasEnZona = mesas.value.filter(m => m.zona === zonaActiva.value)
-    const ultimaNumero = mesasEnZona.length > 0
-      ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
+    const ultimaNumero = mesasEnZona.length > 0 ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
     for (let i = 1; i <= cantidadMesas.value; i++) {
       const index = mesasEnZona.length + i - 1
       await addDoc(collection(db, `locales/${localId.value}/mesas`), {
@@ -489,7 +476,8 @@ const resetearMesas = async () => {
   } catch { alert('Error al borrar las mesas.') }
 }
 
-// ── ACCIONES: ZONAS ──
+// ── ACCIONES: ZONAS ───────────────────────────────────────────────
+
 const guardarZona = async () => {
   if (!localId.value || !nuevaZona.value.nombre.trim()) return alert('El nombre es obligatorio.')
   const yaExiste = zonas.value.some(z => z.nombre.toLowerCase() === nuevaZona.value.nombre.toLowerCase())
@@ -513,49 +501,29 @@ const eliminarZona = async (id: string, nombre: string) => {
   } catch { alert('Error al eliminar la zona.') }
 }
 
-// ── ACCIONES: CATEGORÍAS ──
+// ── ACCIONES: CATEGORÍAS ──────────────────────────────────────────
+
 const subirFotoCategoria = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length || !localId.value) return
-
   const file = input.files[0]
-  if (!file.type.startsWith('image/')) {
-    input.value = ''
-    return alert('Solo se permiten imágenes.')
-  }
-  if (file.size > 3 * 1024 * 1024) {
-    input.value = ''
-    return alert('La imagen no puede superar 3MB.')
-  }
-
+  if (!file.type.startsWith('image/')) { input.value = ''; return alert('Solo se permiten imágenes.') }
+  if (file.size > 3 * 1024 * 1024) { input.value = ''; return alert('La imagen no puede superar 3MB.') }
   subiendoFotoCategoria.value = true
   try {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('upload_preset', CLOUDINARY_PRESET)
     formData.append('folder', `easyorder/${localId.value}/categorias`)
-
-    const res = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
-      { method: 'POST', body: formData }
-    )
-
-    if (!res.ok) throw new Error('Cloudinary upload failed')
-
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData })
+    if (!res.ok) throw new Error('Upload failed')
     const data = await res.json()
     nuevaCategoria.value.imageUrl = data.secure_url || ''
-  } catch (error) {
-    console.error('Error al subir la foto de la categoria:', error)
-    alert('Error al subir la foto de la categoria.')
-  } finally {
-    input.value = ''
-    subiendoFotoCategoria.value = false
-  }
+  } catch { alert('Error al subir la foto.') }
+  finally { input.value = ''; subiendoFotoCategoria.value = false }
 }
 
-const quitarFotoCategoria = () => {
-  nuevaCategoria.value.imageUrl = ''
-}
+const quitarFotoCategoria = () => { nuevaCategoria.value.imageUrl = '' }
 
 const resetCategoriaForm = () => {
   editandoCategoriaId.value = null
@@ -564,27 +532,69 @@ const resetCategoriaForm = () => {
 
 const editarCategoria = (cat: Categoria) => {
   editandoCategoriaId.value = cat.id
-  nuevaCategoria.value = {
-    nombre: cat.nombre,
-    icono: cat.icono,
-    imageUrl: cat.imageUrl || ''
-  }
+  nuevaCategoria.value = { nombre: cat.nombre, icono: cat.icono, imageUrl: cat.imageUrl || '' }
   mostrarModalCategorias.value = true
+}
+
+const guardarCategoria = async () => {
+  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
+  const nombreNuevo = nuevaCategoria.value.nombre.trim()
+  const nombreAnterior = categorias.value.find(c => c.id === editandoCategoriaId.value)?.nombre
+  const yaExiste = categorias.value.some(c =>
+    c.nombre.toLowerCase() === nombreNuevo.toLowerCase() && c.id !== editandoCategoriaId.value
+  )
+  if (yaExiste) return alert('Esa categoría ya existe.')
+  try {
+    const payload = {
+      nombre: nombreNuevo,
+      icono: nuevaCategoria.value.icono || '🍽️',
+      imageUrl: nuevaCategoria.value.imageUrl || '',
+      updatedAt: new Date()
+    }
+    if (editandoCategoriaId.value) {
+      const batch = writeBatch(db)
+      batch.update(doc(db, `locales/${localId.value}/categorias`, editandoCategoriaId.value), payload)
+      if (nombreAnterior && nombreAnterior !== nombreNuevo) {
+        productos.value.filter(p => p.category === nombreAnterior).forEach(producto => {
+          batch.update(doc(db, `locales/${localId.value}/productos`, producto.id), { category: nombreNuevo })
+        })
+      }
+      await batch.commit()
+    } else {
+      const siguienteOrden = Math.max(-1, ...categorias.value.map(c => typeof c.orderIndex === 'number' ? c.orderIndex : -1)) + 1
+      await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...payload, orderIndex: siguienteOrden, createdAt: new Date() })
+    }
+    resetCategoriaForm()
+  } catch { alert('Error al guardar la categoría.') }
+}
+
+const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
+  if (!localId.value) return
+  const lista = [...categoriasOrdenadas.value]
+  const indiceActual = lista.findIndex(c => c.id === cat.id)
+  const nuevoIndice = indiceActual + direccion
+  if (indiceActual < 0 || nuevoIndice < 0 || nuevoIndice >= lista.length) return
+  const [categoriaMovida] = lista.splice(indiceActual, 1)
+  lista.splice(nuevoIndice, 0, categoriaMovida)
+  try {
+    ordenCategorias.value = 'manual'
+    await Promise.all(lista.map((categoria, index) =>
+      updateDoc(doc(db, `locales/${localId.value}/categorias`, categoria.id), { orderIndex: index })
+    ))
+  } catch { alert('Error al reordenar las categorías.') }
 }
 
 const eliminarCategoria = async (id: string, nombre: string) => {
   if (!localId.value) return
   const afectados = productos.value.filter(p => p.category === nombre).length
-  const msg = afectados > 0
-    ? `¿Eliminar "${nombre}"? ${afectados} productos quedarán sin categoría.`
-    : `¿Eliminar la categoría "${nombre}"?`
+  const msg = afectados > 0 ? `¿Eliminar "${nombre}"? ${afectados} productos quedarán sin categoría.` : `¿Eliminar la categoría "${nombre}"?`
   if (!confirm(msg)) return
-  try {
-    await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id))
-  } catch { alert('Error al eliminar.') }
+  try { await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id)) }
+  catch { alert('Error al eliminar.') }
 }
 
-// ── ACCIONES: PRODUCTOS ──
+// ── ACCIONES: PRODUCTOS ───────────────────────────────────────────
+
 const resetProductoForm = () => {
   editandoProductoId.value = null
   nuevoProducto.value = {
@@ -592,7 +602,8 @@ const resetProductoForm = () => {
     price: 0,
     category: categorias.value[0]?.nombre ?? '',
     icon: '🍽️',
-    imageUrl: ''
+    imageUrl: '',
+    sirveCamarero: false
   }
 }
 
@@ -603,9 +614,32 @@ const editarProducto = (producto: Producto) => {
     price: Number(producto.price),
     category: producto.category,
     icon: producto.icon,
-    imageUrl: producto.imageUrl || ''
+    imageUrl: producto.imageUrl || '',
+    sirveCamarero: producto.sirveCamarero ?? false
   }
 }
+
+const subirFotoProducto = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.length || !localId.value) return
+  const file = input.files[0]
+  if (!file.type.startsWith('image/')) { input.value = ''; return alert('Solo se permiten imágenes.') }
+  if (file.size > 3 * 1024 * 1024) { input.value = ''; return alert('La imagen no puede superar 3MB.') }
+  subiendoFotoProducto.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('upload_preset', CLOUDINARY_PRESET)
+    formData.append('folder', `easyorder/${localId.value}/productos`)
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData })
+    if (!res.ok) throw new Error('Upload failed')
+    const data = await res.json()
+    nuevoProducto.value.imageUrl = data.secure_url || ''
+  } catch { alert('Error al subir la foto.') }
+  finally { input.value = ''; subiendoFotoProducto.value = false }
+}
+
+const quitarFotoProducto = () => { nuevoProducto.value.imageUrl = '' }
 
 const guardarProducto = async () => {
   if (!localId.value) return
@@ -614,173 +648,77 @@ const guardarProducto = async () => {
   if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
   try {
     const payload = {
-      ...nuevoProducto.value,
       name: nuevoProducto.value.name.trim(),
       price: Number(nuevoProducto.value.price),
       category: nuevoProducto.value.category,
       icon: nuevoProducto.value.icon || '🍽️',
-      imageUrl: nuevoProducto.value.imageUrl || ''
+      imageUrl: nuevoProducto.value.imageUrl || '',
+      sirveCamarero: nuevoProducto.value.sirveCamarero
     }
-
     if (editandoProductoId.value) {
       await updateDoc(doc(db, `locales/${localId.value}/productos`, editandoProductoId.value), payload)
     } else {
       await addDoc(collection(db, `locales/${localId.value}/productos`), payload)
     }
-
     resetProductoForm()
   } catch { alert('Error al guardar el producto.') }
 }
 
-const subirFotoProducto = async (e: Event) => {
-  const input = e.target as HTMLInputElement
-  if (!input.files?.length || !localId.value) return
-
-  const file = input.files[0]
-  if (!file.type.startsWith('image/')) {
-    input.value = ''
-    return alert('Solo se permiten imágenes.')
-  }
-  if (file.size > 3 * 1024 * 1024) {
-    input.value = ''
-    return alert('La imagen no puede superar 3MB.')
-  }
-
-  subiendoFotoProducto.value = true
-  try {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('upload_preset', CLOUDINARY_PRESET)
-    formData.append('folder', `easyorder/${localId.value}/productos`)
-
-    const res = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
-      { method: 'POST', body: formData }
-    )
-
-    if (!res.ok) throw new Error('Cloudinary upload failed')
-
-    const data = await res.json()
-    nuevoProducto.value.imageUrl = data.secure_url || ''
-  } catch (error) {
-    console.error('Error al subir la foto del producto:', error)
-    alert('Error al subir la foto del producto.')
-  } finally {
-    input.value = ''
-    subiendoFotoProducto.value = false
-  }
-}
-
-const quitarFotoProducto = () => {
-  nuevoProducto.value.imageUrl = ''
-}
-
-const guardarCategoria = async () => {
-  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
-
-  const nombreNuevo = nuevaCategoria.value.nombre.trim()
-  const nombreAnterior = categorias.value.find(c => c.id === editandoCategoriaId.value)?.nombre
-  const yaExiste = categorias.value.some(c =>
-    c.nombre.toLowerCase() === nombreNuevo.toLowerCase() && c.id !== editandoCategoriaId.value
-  )
-
-  if (yaExiste) return alert('Esa categoría ya existe.')
-
-  try {
-    const payload = {
-      nombre: nombreNuevo,
-      icono: nuevaCategoria.value.icono || '🍽️',
-      imageUrl: nuevaCategoria.value.imageUrl || '',
-      updatedAt: new Date()
-    }
-
-    if (editandoCategoriaId.value) {
-      const batch = writeBatch(db)
-      batch.update(doc(db, `locales/${localId.value}/categorias`, editandoCategoriaId.value), payload)
-
-      if (nombreAnterior && nombreAnterior !== nombreNuevo) {
-        productos.value
-          .filter(p => p.category === nombreAnterior)
-          .forEach((producto) => {
-            batch.update(doc(db, `locales/${localId.value}/productos`, producto.id), {
-              category: nombreNuevo
-            })
-          })
-      }
-
-      await batch.commit()
-    } else {
-      const siguienteOrden = Math.max(
-        -1,
-        ...categorias.value.map(c => typeof c.orderIndex === 'number' ? c.orderIndex : -1)
-      ) + 1
-
-      await addDoc(collection(db, `locales/${localId.value}/categorias`), {
-        ...payload,
-        orderIndex: siguienteOrden,
-        createdAt: new Date()
-      })
-    }
-
-    resetCategoriaForm()
-  } catch { alert('Error al guardar la categoría.') }
-}
-
-const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
-  if (!localId.value) return
-
-  const lista = [...categoriasOrdenadas.value]
-  const indiceActual = lista.findIndex(c => c.id === cat.id)
-  const nuevoIndice = indiceActual + direccion
-
-  if (indiceActual < 0 || nuevoIndice < 0 || nuevoIndice >= lista.length) return
-
-  const [categoriaMovida] = lista.splice(indiceActual, 1)
-  lista.splice(nuevoIndice, 0, categoriaMovida)
-
-  try {
-    ordenCategorias.value = 'manual'
-    await Promise.all(
-      lista.map((categoria, index) =>
-        updateDoc(doc(db, `locales/${localId.value}/categorias`, categoria.id), {
-          orderIndex: index
-        })
-      )
-    )
-  } catch {
-    alert('Error al reordenar las categorías.')
-  }
-}
-
 const eliminarProducto = async (id: string, nombre: string) => {
   if (!localId.value || !confirm(`¿Eliminar "${nombre}"?`)) return
-  try {
-    await deleteDoc(doc(db, `locales/${localId.value}/productos`, id))
-  } catch { alert('Error al eliminar.') }
+  try { await deleteDoc(doc(db, `locales/${localId.value}/productos`, id)) }
+  catch { alert('Error al eliminar.') }
 }
 
-// ── ACCIONES: INVITACIONES ──
-const generarCodigo = (): string => {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
-}
+// ── ACCIONES: INVITACIONES ────────────────────────────────────────
+
+const generarCodigo = () => Array.from({ length: 8 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('')
 
 const crearInvitacion = async () => {
-  if (!localId.value || !nuevaInvitacion.value.email.trim()) return alert('El email es obligatorio.')
+  if (!localId.value || !nuevaInvitacion.value.email.trim()) return
   isCreandoInvitacion.value = true
+  
   try {
-    await addDoc(collection(db, 'invitaciones'), {
-      email: nuevaInvitacion.value.email.trim().toLowerCase(),
-      rol: nuevaInvitacion.value.rol,
-      codigo: generarCodigo(),
-      estado: 'pendiente',
-      localId: localId.value,
-      localNombre: localId.value,
-      creadoEn: new Date()
+    // 1. Generamos el código y lo guardamos en una variable
+    const nuevoCodigo = generarCodigo()
+    const emailDestino = nuevaInvitacion.value.email.trim().toLowerCase()
+
+    // 2. Lo guardamos en Firebase (igual que antes)
+    await addDoc(collection(db, 'invitaciones'), { 
+      email: emailDestino, 
+      rol: nuevaInvitacion.value.rol, 
+      codigo: nuevoCodigo, 
+      estado: 'pendiente', 
+      localId: localId.value, 
+      localNombre: localId.value, 
+      creadoEn: new Date() 
     })
+
+    // 3. ¡MANDAMOS EL CORREO CON EMAILJS!
+    // Sustituye los strings vacíos por tus IDs reales de EmailJS
+    const serviceID = 'service_2aiiuq6'
+    const templateID = 'template_rk7yu8c'
+    const publicKey = '8yatETfTGVpx47fWE'
+
+    const templateParams = {
+      user_email: emailDestino, // El email al que se lo mandamos
+      rol: nuevaInvitacion.value.rol, // Para que el template imprima "camarero" o "cocinero"
+      codigo: nuevoCodigo // El código mágico
+    }
+
+    await emailjs.send(serviceID, templateID, templateParams, publicKey)
+    console.log('¡Correo de invitación enviado con éxito!')
+
+    // 4. Limpiamos el formulario
     nuevaInvitacion.value = { email: '', rol: 'camarero' }
-  } catch { alert('Error al crear la invitación.') }
-  finally { isCreandoInvitacion.value = false }
+    alert('Invitación creada y correo enviado al empleado.')
+
+  } catch (error) { 
+    console.error('Error:', error)
+    alert('Hubo un error al crear la invitación o enviar el correo.') 
+  } finally { 
+    isCreandoInvitacion.value = false 
+  }
 }
 
 const eliminarInvitacion = async (id: string) => {
@@ -793,16 +731,15 @@ const limpiarInvitacionesUsadas = async () => {
   const usadas = invitaciones.value.filter(i => i.estado === 'usada')
   if (usadas.length === 0) return alert('No hay códigos usados que limpiar.')
   if (!confirm(`¿Borrar ${usadas.length} códigos ya utilizados?`)) return
-  try {
-    await Promise.all(usadas.map(inv => deleteDoc(doc(db, 'invitaciones', inv.id))))
-  } catch { alert('Error al limpiar.') }
+  try { await Promise.all(usadas.map(inv => deleteDoc(doc(db, 'invitaciones', inv.id)))) }
+  catch { alert('Error al limpiar.') }
 }
 
-// ── ACCIONES: EMPLEADOS ──
+// ── ACCIONES: EMPLEADOS ───────────────────────────────────────────
+
 const toggleEstadoEmpleado = async (id: string, estadoActual: boolean) => {
-  try {
-    await updateDoc(doc(db, 'usuarios', id), { activo: !estadoActual })
-  } catch { alert('Error al actualizar el estado.') }
+  try { await updateDoc(doc(db, 'usuarios', id), { activo: !estadoActual }) }
+  catch { alert('Error al actualizar el estado.') }
 }
 
 const eliminarEmpleado = async (id: string, nombre: string) => {
@@ -811,7 +748,8 @@ const eliminarEmpleado = async (id: string, nombre: string) => {
   catch { alert('Error al eliminar.') }
 }
 
-// ── ACCIONES: FINANZAS ──
+// ── ACCIONES: FINANZAS ────────────────────────────────────────────
+
 const abrirDetalleFactura = (factura: Factura) => {
   facturaSeleccionada.value = factura
   mostrarModalDetalleFactura.value = true
@@ -842,9 +780,7 @@ const agregarItemTicket = () => {
   if (!nuevoItemSeleccionado.value) return
   const prod = productos.value.find(p => p.id === nuevoItemSeleccionado.value)
   if (prod && facturaEditando.value.items) {
-    facturaEditando.value.items.push({
-      nombre: prod.name, cantidad: 1, precio: prod.price, subtotal: prod.price
-    })
+    facturaEditando.value.items.push({ nombre: prod.name, cantidad: 1, precio: prod.price, subtotal: prod.price })
     recalcularTotalFactura()
     nuevoItemSeleccionado.value = ''
   }
@@ -868,7 +804,8 @@ const eliminarFactura = async (id: string) => {
   catch { alert('Error al eliminar.') }
 }
 
-// ── EMOJI PICKER ──
+// ── EMOJI PICKER ──────────────────────────────────────────────────
+
 const onSelectEmojiCategoria = (e: any) => { nuevaCategoria.value.icono = e.i; mostrarSelectorCategoria.value = false }
 const onSelectEmojiProducto  = (e: any) => { nuevoProducto.value.icon  = e.i; mostrarSelectorProducto.value  = false }
 const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; mostrarSelectorZona.value      = false }
@@ -881,17 +818,8 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
     <aside class="sidebar">
       <div class="sidebar-brand">
         <div class="sidebar-brand-logo">
-          <img
-            v-if="configNegocio.logoUrl"
-            :src="configNegocio.logoUrl"
-            class="sidebar-logo-img"
-            alt="Logo"
-          />
-          <div
-            v-else
-            class="sidebar-logo-placeholder"
-            :style="{ background: configNegocio.colorAcento || '#4f46e5' }"
-          >
+          <img v-if="configNegocio.logoUrl" :src="configNegocio.logoUrl" class="sidebar-logo-img" alt="Logo" />
+          <div v-else class="sidebar-logo-placeholder" :style="{ background: configNegocio.colorAcento || '#4f46e5' }">
             {{ configNegocio.nombreNegocio?.charAt(0) || 'E' }}
           </div>
         </div>
@@ -902,14 +830,15 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
       </div>
 
       <nav class="sidebar-nav">
-        <button :class="{ active: currentTab === 'finanzas' }" @click="currentTab = 'finanzas'">💰 Finanzas</button>
-        <button :class="{ active: currentTab === 'mesas' }" @click="currentTab = 'mesas'">🪑 Sala</button>
+        <button :class="{ active: currentTab === 'finanzas' }"  @click="currentTab = 'finanzas'">💰 Finanzas</button>
+        <button :class="{ active: currentTab === 'mesas' }"     @click="currentTab = 'mesas'">🪑 Sala</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
-        <button :class="{ active: currentTab === 'usuarios' }" @click="currentTab = 'usuarios'">👥 Empleados</button>
+        <button :class="{ active: currentTab === 'usuarios' }"  @click="currentTab = 'usuarios'">👥 Empleados</button>
+        <button :class="{ active: currentTab === 'negocio' }"   @click="currentTab = 'negocio'">🏢 Mi Negocio</button>
       </nav>
 
       <div class="sidebar-footer">
-        <div class="local-info">🏢 {{ localId }}</div>
+        
         <div class="sidebar-powered">
           <PoweredByEasyOrder compact tone="dark" />
         </div>
@@ -952,12 +881,8 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         </div>
 
         <div class="tabs-zone-admin">
-          <button :class="{ active: finanzasSubTab === 'tickets' }" @click="finanzasSubTab = 'tickets'">
-            🧾 Registro de Tickets
-          </button>
-          <button :class="{ active: finanzasSubTab === 'rendimiento' }" @click="finanzasSubTab = 'rendimiento'">
-            👥 Rendimiento Empleados
-          </button>
+          <button :class="{ active: finanzasSubTab === 'tickets' }"     @click="finanzasSubTab = 'tickets'">🧾 Registro de Tickets</button>
+          <button :class="{ active: finanzasSubTab === 'rendimiento' }" @click="finanzasSubTab = 'rendimiento'">👥 Rendimiento Empleados</button>
         </div>
 
         <div v-if="finanzasSubTab === 'tickets'" class="card-container">
@@ -984,12 +909,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
           </div>
 
           <div class="tickets-grid">
-            <div
-              v-for="f in facturasFiltradas"
-              :key="f.id"
-              class="factura-card"
-              @click="abrirDetalleFactura(f)"
-            >
+            <div v-for="f in facturasFiltradas" :key="f.id" class="factura-card" @click="abrirDetalleFactura(f)">
               <div class="f-header">
                 <span class="f-mesa">Mesa {{ f.mesaNumero }} <small>({{ f.zona }})</small></span>
                 <span class="f-metodo" :class="f.metodoPago">{{ f.metodoPago }}</span>
@@ -1004,7 +924,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 <span class="f-total">{{ f.total.toFixed(2) }} €</span>
                 <div class="ticket-actions">
                   <button class="btn-icon btn-edit" @click.stop="abrirEditarFactura(f)" title="Editar">✏️</button>
-                  <button class="btn-icon btn-del" @click.stop="eliminarFactura(f.id)" title="Eliminar">🗑️</button>
+                  <button class="btn-icon btn-del"  @click.stop="eliminarFactura(f.id)"  title="Eliminar">🗑️</button>
                 </div>
               </div>
             </div>
@@ -1012,9 +932,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         </div>
 
         <div v-if="finanzasSubTab === 'rendimiento'" class="card-container">
-          <div v-if="ventasPorEmpleado.length === 0" class="empty-state-box">
-            No hay datos de ventas para este día.
-          </div>
+          <div v-if="ventasPorEmpleado.length === 0" class="empty-state-box">No hay datos de ventas para este día.</div>
           <div v-else class="rendimiento-lista">
             <div v-for="(emp, i) in ventasPorEmpleado" :key="emp.nombre" class="rendimiento-row">
               <div class="rank-badge">{{ i + 1 }}</div>
@@ -1049,16 +967,13 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
         <div class="tabs-zone-admin">
           <button
-            v-for="z in zonas"
-            :key="z.id"
+            v-for="z in zonas" :key="z.id"
             :class="{ active: zonaActiva === z.nombre }"
             @click="zonaActiva = z.nombre; mesaSeleccionada = null"
           >
             {{ z.icono }} {{ z.nombre }}
           </button>
-          <button class="btn-gestionar-zonas" @click="mostrarModalZonas = true">
-            ⚙️ Gestionar Zonas
-          </button>
+          <button class="btn-gestionar-zonas" @click="mostrarModalZonas = true">⚙️ Gestionar Zonas</button>
         </div>
 
         <FloorEditor
@@ -1085,9 +1000,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
             <p class="page-subtitle">{{ productos.length }} productos en la carta</p>
           </div>
           <div class="controls">
-            <button class="btn-gestionar-zonas" @click="mostrarModalCategorias = true">
-              ⚙️ Gestionar Categorías
-            </button>
+            <button class="btn-gestionar-zonas" @click="mostrarModalCategorias = true">⚙️ Gestionar Categorías</button>
           </div>
         </div>
 
@@ -1109,13 +1022,11 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
               <div class="field-group">
                 <label>Categoría</label>
                 <select v-model="nuevoProducto.category">
-                  <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">
-                    {{ cat.icono }} {{ cat.nombre }}
-                  </option>
+                  <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">{{ cat.icono }} {{ cat.nombre }}</option>
                 </select>
               </div>
               <div class="field-group">
-                <label>Icono</label>
+                <label>Icono y foto</label>
                 <div class="producto-media-controls">
                   <div class="emoji-selector-container">
                     <button type="button" class="btn-emoji" @click="mostrarSelectorProducto = !mostrarSelectorProducto">
@@ -1126,28 +1037,42 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                       <EmojiPicker :native="true" theme="light" @select="onSelectEmojiProducto" />
                     </div>
                   </div>
-
                   <label class="btn-upload-photo" :class="{ loading: subiendoFotoProducto }">
                     <input type="file" accept="image/*" @change="subirFotoProducto">
-                    <span>{{ subiendoFotoProducto ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                    <span>{{ subiendoFotoProducto ? 'Subiendo...' : 'Agregar foto' }}</span>
                   </label>
                 </div>
-
                 <div v-if="nuevoProducto.imageUrl" class="producto-photo-preview">
-                  <img :src="nuevoProducto.imageUrl" alt="Vista previa del producto">
-                  <button type="button" class="btn-remove-photo" @click="quitarFotoProducto">
-                    Quitar foto
+                  <img :src="nuevoProducto.imageUrl" alt="Vista previa">
+                  <button type="button" class="btn-remove-photo" @click="quitarFotoProducto">Quitar foto</button>
+                </div>
+                <p v-else class="field-hint">Opcional. Imagen para la carta digital.</p>
+              </div>
+
+              <!-- ── TOGGLE SIRVE CAMARERO ── -->
+              <div class="field-group">
+                <label>Destino del pedido</label>
+                <div class="toggle-row">
+                  <div class="toggle-info">
+                    <span class="toggle-label">{{ nuevoProducto.sirveCamarero ? '🍺 Sirve el camarero' : '👨‍🍳 Va a cocina' }}</span>
+                    <span class="toggle-desc">{{ nuevoProducto.sirveCamarero ? 'El camarero lo prepara y sirve directamente' : 'Se envía al panel de cocina' }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="toggle-switch"
+                    :class="{ active: nuevoProducto.sirveCamarero }"
+                    @click="nuevoProducto.sirveCamarero = !nuevoProducto.sirveCamarero"
+                  >
+                    <span class="toggle-thumb"></span>
                   </button>
                 </div>
-                <p v-else class="field-hint">Opcional. Se guardará junto al producto para usarla luego en el menú o la app.</p>
               </div>
+
               <div class="form-actions-stacked">
                 <button @click="guardarProducto" class="btn-primary btn-full">
                   {{ editandoProductoId ? 'Guardar cambios' : '+ Guardar en el Menú' }}
                 </button>
-                <button v-if="editandoProductoId" @click="resetProductoForm" class="btn-secondary btn-full">
-                  Cancelar edición
-                </button>
+                <button v-if="editandoProductoId" @click="resetProductoForm" class="btn-secondary btn-full">Cancelar edición</button>
               </div>
             </div>
           </div>
@@ -1164,12 +1089,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
             <div v-for="(platos, categoria) in productosPorCategoria" :key="categoria" class="categoria-grupo">
               <div class="categoria-header">
                 <div class="categoria-visual">
-                  <img
-                    v-if="obtenerCategoria(categoria)?.imageUrl"
-                    :src="obtenerCategoria(categoria)?.imageUrl"
-                    :alt="categoria"
-                    class="categoria-thumb"
-                  >
+                  <img v-if="obtenerCategoria(categoria)?.imageUrl" :src="obtenerCategoria(categoria)?.imageUrl" :alt="categoria" class="categoria-thumb">
                   <span v-else class="categoria-icono">{{ obtenerCategoria(categoria)?.icono ?? '🍽️' }}</span>
                 </div>
                 <span class="categoria-nombre">{{ categoria }}</span>
@@ -1183,13 +1103,16 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                   </div>
                   <div class="menu-plato-info">
                     <span class="menu-plato-name">{{ p.name }}</span>
-                    <span class="menu-plato-category">{{ categoria }}</span>
+                    <span class="menu-plato-category">
+                      {{ categoria }}
+                      <span v-if="p.sirveCamarero" class="badge-camarero">🍺 Camarero</span>
+                    </span>
                   </div>
                   <div class="menu-plato-footer">
                     <span class="menu-plato-price">{{ Number(p.price).toFixed(2) }}€</span>
                     <div class="item-actions">
-                      <button class="btn-editar" @click="editarProducto(p)" title="Editar plato">✎</button>
-                      <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)" title="Eliminar plato">✕</button>
+                      <button class="btn-editar" @click="editarProducto(p)" title="Editar">✎</button>
+                      <button class="btn-eliminar" @click="eliminarProducto(p.id, p.name)" title="Eliminar">✕</button>
                     </div>
                   </div>
                 </div>
@@ -1212,9 +1135,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
           <div class="columna-izq">
             <div class="form-card">
               <h3 class="form-card-title">🔑 Nueva invitación</h3>
-              <p class="form-hint">
-                El empleado usará el código en <strong>/register</strong> para activar su cuenta.
-              </p>
+              <p class="form-hint">El empleado usará el código en <strong>/register</strong> para activar su cuenta.</p>
               <div class="form-fields" style="margin-top: 16px;">
                 <div class="field-group">
                   <label>Email del empleado</label>
@@ -1239,9 +1160,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                 <h3 class="form-card-title" style="margin-bottom: 0;">Códigos generados</h3>
                 <button class="btn-text-danger" @click="limpiarInvitacionesUsadas">🧹 Limpiar usados</button>
               </div>
-              <div v-if="invitaciones.length === 0" class="empty-state-box" style="margin-top: 12px;">
-                No hay invitaciones todavía.
-              </div>
+              <div v-if="invitaciones.length === 0" class="empty-state-box" style="margin-top: 12px;">No hay invitaciones todavía.</div>
               <div v-for="inv in invitaciones" :key="inv.id" class="item-row" style="margin-top: 8px;">
                 <div class="item-info">
                   <span class="item-name" style="font-size: 0.85rem;">{{ inv.email }}</span>
@@ -1257,34 +1176,131 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
           <div class="lista-card">
             <h3 class="form-card-title">👥 Equipo registrado</h3>
+
             <div class="filtros-rol">
               <button :class="{ active: filtroRol === 'todos' }"    @click="filtroRol = 'todos'">Todos</button>
               <button :class="{ active: filtroRol === 'admin' }"    @click="filtroRol = 'admin'">Admins</button>
               <button :class="{ active: filtroRol === 'camarero' }" @click="filtroRol = 'camarero'">Camareros</button>
               <button :class="{ active: filtroRol === 'cocinero' }" @click="filtroRol = 'cocinero'">Cocineros</button>
             </div>
-            <div v-if="empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol).length === 0" class="empty-state-box">
+
+            <div class="filtros-rol" style="margin-top: 8px; margin-bottom: 20px;">
+              <button :class="{ active: filtroEstado === 'todos' }"    @click="filtroEstado = 'todos'">Todos</button>
+              <button :class="{ active: filtroEstado === 'activo' }"   @click="filtroEstado = 'activo'">● Activos</button>
+              <button :class="{ active: filtroEstado === 'inactivo' }" @click="filtroEstado = 'inactivo'">○ Inactivos</button>
+            </div>
+
+            <div v-if="empleadosFiltrados.length === 0" class="empty-state-box">
               No hay empleados con este filtro.
             </div>
-            <div
-              v-for="emp in empleados.filter(e => filtroRol === 'todos' || e.rol === filtroRol)"
-              :key="emp.id"
-              class="empleado-row"
-            >
+
+            <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
               <div class="empleado-avatar">{{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}</div>
               <div class="item-info">
                 <span class="item-name">{{ emp.nombre }}</span>
                 <span class="item-sub">{{ emp.email }}</span>
               </div>
               <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
-              <button
-                class="activo-toggle"
-                :class="emp.activo ? 'activo' : 'inactivo'"
-                @click="toggleEstadoEmpleado(emp.id, emp.activo)"
-              >
+              <button class="activo-toggle" :class="emp.activo ? 'activo' : 'inactivo'" @click="toggleEstadoEmpleado(emp.id, emp.activo)">
                 {{ emp.activo ? '● Activo' : '○ Inactivo' }}
               </button>
               <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ TAB: MI NEGOCIO ══ -->
+      <div v-if="currentTab === 'negocio'">
+        <div class="page-header">
+          <div>
+            <h1>Identidad del Negocio</h1>
+            <p class="page-subtitle">Personaliza cómo aparece tu negocio en EasyOrder</p>
+          </div>
+        </div>
+
+        <div class="dos-columnas">
+          <div class="form-card">
+            <h3 class="form-card-title">⚙️ Configuración</h3>
+            <div class="form-fields">
+
+              <div class="field-group">
+                <label>Nombre del negocio</label>
+                <input v-model="configEditando.nombreNegocio" placeholder="Ej: Bar Scarlatti" />
+              </div>
+
+              <div class="field-group">
+                <label>Logo del negocio</label>
+                <div class="logo-upload-area">
+                  <img v-if="configEditando.logoUrl" :src="configEditando.logoUrl" class="logo-preview" alt="Logo" />
+                  <div v-else class="logo-placeholder"><span>Sin logo</span></div>
+                  <label class="btn-upload-logo" :class="{ loading: subiendoLogo }">
+                    {{ subiendoLogo ? 'Subiendo...' : '📤 Subir imagen' }}
+                    <input type="file" accept="image/*" style="display:none" @change="subirLogo" :disabled="subiendoLogo" />
+                  </label>
+                  <p class="upload-hint">PNG, JPG o SVG · Máx 2MB</p>
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label>Color principal</label>
+                <div class="color-picker-row">
+                  <input type="color" v-model="configEditando.colorAcento" class="color-input" />
+                  <span class="color-value">{{ configEditando.colorAcento }}</span>
+                  <div class="color-preview-pill" :style="{ background: configEditando.colorAcento }">Aa</div>
+                </div>
+                <div class="color-presets">
+                  <button
+                    v-for="color in COLORES_PRESET" :key="color"
+                    class="color-preset-btn"
+                    :style="{ background: color }"
+                    :class="{ active: configEditando.colorAcento === color }"
+                    @click="configEditando.colorAcento = color"
+                    :title="color"
+                  />
+                </div>
+              </div>
+
+              <button class="btn-primary btn-full" @click="guardarConfig" :disabled="guardandoConfig">
+                {{ guardandoConfig ? 'Guardando...' : '✓ Guardar configuración' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="lista-card">
+            <h3 class="form-card-title">👁 Vista previa</h3>
+            <p class="form-hint" style="margin-bottom: 20px;">Así verán tu negocio los empleados en la aplicación.</p>
+
+            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 8px;">Sidebar camarero</p>
+            <div class="preview-sidebar">
+              <div class="preview-brand" :style="{ borderBottomColor: configEditando.colorAcento }">
+                <img v-if="configEditando.logoUrl" :src="configEditando.logoUrl" class="preview-logo" alt="Logo" />
+                <div v-else class="preview-logo-placeholder" :style="{ background: configEditando.colorAcento }">
+                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
+                </div>
+                <div>
+                  <div class="preview-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</div>
+                  <div class="preview-powered">powered by EasyOrder</div>
+                </div>
+              </div>
+              <div class="preview-nav">
+                <div class="preview-nav-item" :style="{ background: configEditando.colorAcento }">🪑 Sala</div>
+                <div class="preview-nav-item-inactive">📊 Resumen</div>
+                <div class="preview-nav-item-inactive">🔔 Pedidos</div>
+              </div>
+            </div>
+
+            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin: 20px 0 8px;">Barra de cocina</p>
+            <div class="preview-cocina-bar">
+              <div class="preview-cocina-left">
+                <img v-if="configEditando.logoUrl" :src="configEditando.logoUrl" class="preview-logo-sm" alt="Logo" />
+                <div v-else class="preview-logo-sm-placeholder" :style="{ background: configEditando.colorAcento }">
+                  {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
+                </div>
+                <span class="preview-cocina-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</span>
+                <span class="preview-cocina-badge" :style="{ background: configEditando.colorAcento }">EasyOrder</span>
+              </div>
+              <span class="preview-cocina-role">Cocina</span>
             </div>
           </div>
         </div>
@@ -1298,7 +1314,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
         <div class="modal-ticket">
           <div class="ticket-paper-admin">
             <div class="ticket-top">
-              <h2>EasyOrder</h2>
+              <h2>{{ configNegocio.nombreNegocio || 'EasyOrder' }}</h2>
               <p class="ticket-sub">COPIA DE TICKET</p>
               <p class="ticket-info">Mesa {{ facturaSeleccionada.mesaNumero }} ({{ facturaSeleccionada.zona }})</p>
               <p class="ticket-info muted">{{ new Date(facturaSeleccionada.fecha.seconds * 1000).toLocaleString() }}</p>
@@ -1317,13 +1333,9 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
               <span>TOTAL</span>
               <span>{{ facturaSeleccionada.total.toFixed(2) }}€</span>
             </div>
-            <p class="ticket-info muted" style="text-align:right; margin-top: 6px;">
-              Método: {{ facturaSeleccionada.metodoPago }}
-            </p>
+            <p class="ticket-info muted" style="text-align:right; margin-top: 6px;">Método: {{ facturaSeleccionada.metodoPago }}</p>
           </div>
-          <button class="btn-primary btn-full" style="border-radius: 0 0 14px 14px;" @click="mostrarModalDetalleFactura = false">
-            Cerrar
-          </button>
+          <button class="btn-primary btn-full" style="border-radius: 0 0 14px 14px;" @click="mostrarModalDetalleFactura = false">Cerrar</button>
         </div>
       </div>
     </transition>
@@ -1447,7 +1459,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                     <input v-model="nuevaCategoria.nombre" placeholder="Ej: Entrantes">
                   </div>
                   <div class="field-group">
-                    <label>Icono</label>
+                    <label>Icono y foto</label>
                     <div class="producto-media-controls">
                       <div class="emoji-selector-container">
                         <button type="button" class="btn-emoji" @click="mostrarSelectorCategoria = !mostrarSelectorCategoria">
@@ -1458,35 +1470,29 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                           <EmojiPicker :native="true" theme="light" @select="onSelectEmojiCategoria" />
                         </div>
                       </div>
-
                       <label class="btn-upload-photo" :class="{ loading: subiendoFotoCategoria }">
                         <input type="file" accept="image/*" @change="subirFotoCategoria">
-                        <span>{{ subiendoFotoCategoria ? 'Subiendo foto...' : 'Agregar foto' }}</span>
+                        <span>{{ subiendoFotoCategoria ? 'Subiendo...' : 'Agregar foto' }}</span>
                       </label>
                     </div>
-
                     <div v-if="nuevaCategoria.imageUrl" class="producto-photo-preview">
-                      <img :src="nuevaCategoria.imageUrl" alt="Vista previa de la categoria">
-                      <button type="button" class="btn-remove-photo" @click="quitarFotoCategoria">
-                        Quitar foto
-                      </button>
+                      <img :src="nuevaCategoria.imageUrl" alt="Vista previa">
+                      <button type="button" class="btn-remove-photo" @click="quitarFotoCategoria">Quitar foto</button>
                     </div>
-                    <p v-else class="field-hint">Opcional. Puedes guardar una imagen representativa de la categoría.</p>
+                    <p v-else class="field-hint">Opcional. Imagen representativa de la categoría.</p>
                   </div>
                   <div class="form-actions-stacked">
                     <button @click="guardarCategoria" class="btn-primary btn-full">
                       {{ editandoCategoriaId ? 'Guardar cambios' : '+ Añadir Categoría' }}
                     </button>
-                    <button v-if="editandoCategoriaId" @click="resetCategoriaForm" class="btn-secondary btn-full">
-                      Cancelar edición
-                    </button>
+                    <button v-if="editandoCategoriaId" @click="resetCategoriaForm" class="btn-secondary btn-full">Cancelar edición</button>
                   </div>
                 </div>
               </div>
               <div class="lista-card">
                 <div class="categoria-list-toolbar">
                   <h3 class="form-card-title">Categorías actuales</h3>
-                  <select v-model="ordenCategorias" class="category-sort-select" aria-label="Ordenar categorías">
+                  <select v-model="ordenCategorias" class="category-sort-select">
                     <option value="manual">Orden personalizado</option>
                     <option value="alfabetico">A-Z</option>
                     <option value="alfabeticoDesc">Z-A</option>
@@ -1506,22 +1512,8 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
                     <span class="item-sub">{{ contarProductosCategoria(cat.nombre) }} productos</span>
                   </div>
                   <div class="item-actions">
-                    <button
-                      class="btn-reorder"
-                      :disabled="index === 0"
-                      title="Subir categoría"
-                      @click="moverCategoria(cat, -1)"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      class="btn-reorder"
-                      :disabled="index === categoriasOrdenadas.length - 1"
-                      title="Bajar categoría"
-                      @click="moverCategoria(cat, 1)"
-                    >
-                      ↓
-                    </button>
+                    <button class="btn-reorder" :disabled="index === 0" title="Subir" @click="moverCategoria(cat, -1)">↑</button>
+                    <button class="btn-reorder" :disabled="index === categoriasOrdenadas.length - 1" title="Bajar" @click="moverCategoria(cat, 1)">↓</button>
                     <button class="btn-editar" @click="editarCategoria(cat)">✎</button>
                     <button class="btn-eliminar" @click="eliminarCategoria(cat.id, cat.nombre)">✕</button>
                   </div>
@@ -1544,319 +1536,79 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .admin-layout { display: flex; min-height: 100vh; background: #f3f4f6; }
 
 /* ── SIDEBAR ── */
-.sidebar {
-  width: 220px;
-  background: #1e293b;
-  color: white;
-  padding: 24px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-}
+.sidebar { width: 220px; background: #1e293b; color: white; padding: 24px 16px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
 
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 8px 20px;
-  border-bottom: 1px solid #334155;
-  margin-bottom: 8px;
-}
-
+.sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 20px; border-bottom: 1px solid #334155; margin-bottom: 8px; }
 .sidebar-brand-logo { flex-shrink: 0; }
-
-.sidebar-logo-img {
-  width: 36px;
-  height: 36px;
-  object-fit: contain;
-  border-radius: 8px;
-  background: white;
-}
-
-.sidebar-logo-placeholder {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-weight: 800;
-  font-size: 1.1rem;
-}
-
+.sidebar-logo-img { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; background: white; }
+.sidebar-logo-placeholder { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 1.1rem; }
 .sidebar-brand-texts { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .sidebar-brand-texts h2 { font-size: 0.95rem; font-weight: 800; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.admin-tag {
-  color: white;
-  font-size: 0.65rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 20px;
-  width: fit-content;
-  transition: background 0.3s;
-}
+.admin-tag { color: white; font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; width: fit-content; transition: background 0.3s; }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-
-.sidebar-nav button {
-  padding: 12px 16px;
-  background: transparent;
-  border: none;
-  color: #94a3b8;
-  text-align: left;
-  cursor: pointer;
-  font-size: 0.9rem;
-  border-radius: 8px;
-  transition: all 0.2s;
-  width: 100%;
-}
-
+.sidebar-nav button { padding: 12px 16px; background: transparent; border: none; color: #94a3b8; text-align: left; cursor: pointer; font-size: 0.9rem; border-radius: 8px; transition: all 0.2s; width: 100%; }
 .sidebar-nav button:hover { background: #334155; color: white; }
 .sidebar-nav button.active { background: #4f46e5; color: white; font-weight: 600; }
 
-.sidebar-footer {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 12px;
-  border-top: 1px solid #334155;
-}
-
-.sidebar-powered {
-  display: flex;
-  justify-content: center;
-  padding: 4px 0;
-}
-
+.sidebar-footer { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid #334155; }
+.sidebar-powered { display: flex; justify-content: center; padding: 4px 0; }
 .local-info { font-size: 0.72rem; color: #64748b; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.powered-by {
-  font-size: 0.65rem;
-  color: #475569;
-  padding: 0 8px;
-  font-style: italic;
-}
-
-.btn-logout {
-  padding: 10px 16px;
-  background: transparent;
-  border: 1px solid #334155;
-  color: #94a3b8;
-  text-align: left;
-  cursor: pointer;
-  font-size: 0.85rem;
-  border-radius: 8px;
-  transition: all 0.2s;
-  width: 100%;
-}
-
+.btn-logout { padding: 10px 16px; background: transparent; border: 1px solid #334155; color: #94a3b8; text-align: left; cursor: pointer; font-size: 0.85rem; border-radius: 8px; transition: all 0.2s; width: 100%; }
 .btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
 
 /* ── CONTENT ── */
 .content { flex: 1; padding: 36px 40px; overflow-y: auto; min-width: 0; }
 
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 28px;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
+.page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 16px; }
 .page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
 .page-subtitle { color: #64748b; font-size: 0.9rem; margin-top: 4px; }
 .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* ── BOTONES ── */
-.btn-primary {
-  background: #4f46e5;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.9rem;
-  transition: background 0.2s;
-}
-
+.btn-primary { background: #4f46e5; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
 .btn-primary:hover:not(:disabled) { background: #4338ca; }
 .btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 .btn-full { width: 100%; padding: 14px; font-size: 0.95rem; }
 
-.btn-secondary {
-  background: white;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  padding: 10px 20px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.9rem;
-  transition: all 0.2s;
-}
+.btn-secondary { background: white; color: #475569; border: 1px solid #cbd5e1; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: all 0.2s; }
+.btn-secondary:hover { background: #f8fafc; border-color: #94a3b8; }
 
-.btn-secondary:hover {
-  background: #f8fafc;
-  border-color: #94a3b8;
-}
-
-.btn-danger {
-  background: #dc2626;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.9rem;
-  transition: background 0.2s;
-}
-
+.btn-danger { background: #dc2626; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
 .btn-danger:hover { background: #b91c1c; }
 
-.btn-close {
-  background: #fee2e2;
-  color: #dc2626;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-weight: 700;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: all 0.2s;
-}
-
+.btn-close { background: #fee2e2; color: #dc2626; border: none; padding: 6px 12px; border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; }
 .btn-close:hover { background: #dc2626; color: white; }
 
-.btn-eliminar {
-  width: 30px;
-  height: 30px;
-  background: #fee2e2;
-  color: #dc2626;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 0.85rem;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
+.btn-eliminar { width: 30px; height: 30px; background: #fee2e2; color: #dc2626; border: none; border-radius: 50%; cursor: pointer; font-weight: 700; font-size: 0.85rem; transition: all 0.2s; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .btn-eliminar:hover { background: #dc2626; color: white; }
 
-.btn-editar {
-  width: 30px;
-  height: 30px;
-  background: #e0e7ff;
-  color: #4338ca;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 0.85rem;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
+.btn-editar { width: 30px; height: 30px; background: #e0e7ff; color: #4338ca; border: none; border-radius: 50%; cursor: pointer; font-weight: 700; font-size: 0.85rem; transition: all 0.2s; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .btn-editar:hover { background: #4338ca; color: white; }
 
-.btn-text-danger {
-  background: transparent;
-  border: none;
-  color: #64748b;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: all 0.2s;
-}
-
+.btn-text-danger { background: transparent; border: none; color: #64748b; font-size: 0.8rem; font-weight: 600; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: all 0.2s; }
 .btn-text-danger:hover { background: #fee2e2; color: #dc2626; }
 
-/* ── INPUTS ── */
-.input-num, .input-date, .input-select {
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  color: #0f172a;
-  background: white;
-  outline: none;
-  transition: border-color 0.2s;
-}
+.btn-reorder { width: 30px; height: 30px; background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; border-radius: 50%; cursor: pointer; font-weight: 800; font-size: 0.9rem; transition: all 0.2s; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.btn-reorder:hover:not(:disabled) { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.btn-reorder:disabled { opacity: 0.35; cursor: not-allowed; }
 
+/* ── INPUTS ── */
+.input-num, .input-date, .input-select { padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.95rem; color: #0f172a; background: white; outline: none; transition: border-color 0.2s; }
 .input-num { width: 80px; text-align: center; }
 .input-date:focus, .input-num:focus, .input-select:focus { border-color: #4f46e5; }
 
 /* ── TABS ── */
-.tabs-zone-admin {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 24px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  align-items: center;
-}
-
-.tabs-zone-admin button {
-  padding: 8px 18px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  font-weight: 600;
-  cursor: pointer;
-  color: #475569;
-  transition: all 0.2s;
-  white-space: nowrap;
-  font-size: 0.9rem;
-}
-
+.tabs-zone-admin { display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 4px; align-items: center; }
+.tabs-zone-admin button { padding: 8px 18px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; font-weight: 600; cursor: pointer; color: #475569; transition: all 0.2s; white-space: nowrap; font-size: 0.9rem; }
 .tabs-zone-admin button.active { background: #4f46e5; color: white; border-color: #4f46e5; }
 .tabs-zone-admin button:hover:not(.active) { background: #f1f5f9; }
-
-.btn-gestionar-zonas {
-  border-style: dashed !important;
-  background: transparent !important;
-  color: #64748b !important;
-}
-
-.btn-gestionar-zonas:hover {
-  border-color: #4f46e5 !important;
-  color: #4f46e5 !important;
-  background: #ede9fe !important;
-}
+.btn-gestionar-zonas { border-style: dashed !important; background: transparent !important; color: #64748b !important; }
+.btn-gestionar-zonas:hover { border-color: #4f46e5 !important; color: #4f46e5 !important; background: #ede9fe !important; }
 
 /* ── KPIs ── */
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-  margin-bottom: 28px;
-}
-
-.kpi-card {
-  background: white;
-  padding: 22px 24px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+.kpi-card { background: white; padding: 22px 24px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; flex-direction: column; gap: 8px; }
 .kpi-card.highlight { background: #f0fdf4; border-color: #bbf7d0; }
 .kpi-title { font-size: 0.78rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
 .kpi-card.highlight .kpi-title { color: #15803d; }
@@ -1864,36 +1616,13 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .kpi-card.highlight .kpi-value { color: #16a34a; }
 
 /* ── FINANZAS ── */
-.finanzas-filtros {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 20px;
-  background: #f8fafc;
-  padding: 14px 18px;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-  flex-wrap: wrap;
-}
-
+.finanzas-filtros { display: flex; gap: 16px; margin-bottom: 20px; background: #f8fafc; padding: 14px 18px; border-radius: 10px; border: 1px solid #e2e8f0; flex-wrap: wrap; }
 .form-group-inline { display: flex; align-items: center; gap: 10px; }
 .form-group-inline label { font-size: 0.85rem; font-weight: 700; color: #475569; white-space: nowrap; }
-
 .tickets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 
-.factura-card {
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
+.factura-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: all 0.2s; }
 .factura-card:hover { border-color: #cbd5e1; box-shadow: 0 6px 12px rgba(0,0,0,0.06); transform: translateY(-2px); }
-
 .f-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #e2e8f0; }
 .f-mesa { font-weight: 800; color: #0f172a; font-size: 1rem; }
 .f-mesa small { color: #64748b; font-weight: 600; font-size: 0.82rem; }
@@ -1906,50 +1635,17 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .f-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 8px; }
 .f-total { font-size: 1.35rem; font-weight: 900; color: #0f172a; }
 .ticket-actions { display: flex; gap: 8px; }
-
-.btn-icon {
-  background: #f1f5f9;
-  border: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: 0.2s;
-  font-size: 0.95rem;
-}
-
+.btn-icon { background: #f1f5f9; border: none; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; font-size: 0.95rem; }
 .btn-icon.btn-edit:hover { background: #e0e7ff; }
 .btn-icon.btn-del:hover  { background: #fee2e2; }
 
 /* ── RENDIMIENTO ── */
 .rendimiento-lista { display: flex; flex-direction: column; gap: 14px; }
-
-.rendimiento-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  background: white;
-  padding: 14px 18px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-}
-
-.rank-badge {
-  width: 32px; height: 32px;
-  background: #4f46e5;
-  color: white;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 0.9rem; flex-shrink: 0;
-}
-
+.rendimiento-row { display: flex; align-items: center; gap: 14px; background: white; padding: 14px 18px; border-radius: 12px; border: 1px solid #e2e8f0; }
+.rank-badge { width: 32px; height: 32px; background: #4f46e5; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.9rem; flex-shrink: 0; }
 .empleado-info { display: flex; flex-direction: column; min-width: 120px; }
 .empleado-nombre { font-weight: 700; color: #0f172a; font-size: 0.95rem; }
 .empleado-pedidos { font-size: 0.78rem; color: #64748b; }
-
 .barra-progreso-wrapper { flex: 1; height: 8px; background: #f1f5f9; border-radius: 10px; overflow: hidden; }
 .barra-progreso { height: 100%; background: linear-gradient(90deg, #4f46e5, #818cf8); border-radius: 10px; transition: width 0.5s ease; min-width: 4px; }
 .rendimiento-total { font-weight: 800; color: #0f172a; font-size: 1rem; min-width: 80px; text-align: right; }
@@ -1957,332 +1653,130 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 /* ── DOS COLUMNAS ── */
 .dos-columnas { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
 .columna-izq { display: flex; flex-direction: column; gap: 0; }
-
-.form-card, .lista-card {
-  background: white;
-  border-radius: 14px;
-  padding: 24px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-
+.form-card, .lista-card { background: white; border-radius: 14px; padding: 24px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .form-card { position: sticky; top: 0; }
 .form-card-title { font-size: 1rem; font-weight: 700; color: #0f172a; margin-bottom: 18px; }
-
 .card-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .form-hint { font-size: 0.82rem; color: #64748b; line-height: 1.5; margin-bottom: 4px; }
+.field-hint { font-size: 0.78rem; color: #64748b; }
 .form-fields { display: flex; flex-direction: column; gap: 14px; }
 .field-group { display: flex; flex-direction: column; gap: 6px; }
-
 .field-group label, .field-label { font-size: 0.82rem; font-weight: 600; color: #475569; }
-
-.field-hint {
-  font-size: 0.78rem;
-  color: #64748b;
-}
-
-.field-group input,
-.field-group select {
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  color: #0f172a;
-  background: white;
-  outline: none;
-  transition: border-color 0.2s;
-  width: 100%;
-}
-
-.field-group input:focus,
-.field-group select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
-
+.field-group input, .field-group select { padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.95rem; color: #0f172a; background: white; outline: none; transition: border-color 0.2s; width: 100%; }
+.field-group input:focus, .field-group select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
 .two-cols-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-actions-stacked { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── TOGGLE SIRVE CAMARERO ── */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.toggle-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.toggle-label { font-size: 0.9rem; font-weight: 700; color: #0f172a; }
+.toggle-desc { font-size: 0.75rem; color: #64748b; line-height: 1.3; }
+
+.toggle-switch {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  border-radius: 999px;
+  border: none;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.25s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.toggle-switch.active { background: #4f46e5; }
+
+.toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  transition: transform 0.25s ease;
+}
+
+.toggle-switch.active .toggle-thumb { transform: translateX(22px); }
+
+.badge-camarero {
+  display: inline-block;
+  background: #fef3c7;
+  color: #b45309;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 20px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
 
 /* ── ITEMS ── */
 .item-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
 .item-row:last-child { border-bottom: none; }
 .item-icon { font-size: 1.5rem; flex-shrink: 0; }
-
-.producto-visual {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.producto-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.item-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.item-name {
-  font-weight: 600;
-  color: #0f172a;
-  font-size: 0.95rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
+.item-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.item-name { font-weight: 600; color: #0f172a; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-sub { font-size: 0.78rem; color: #94a3b8; }
-.item-price { font-weight: 700; color: #4f46e5; font-size: 0.95rem; white-space: nowrap; }
 .item-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
-.categoria-list-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-}
+.producto-visual { width: 44px; height: 44px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; }
+.producto-thumb { width: 100%; height: 100%; object-fit: cover; }
 
-.categoria-list-toolbar .form-card-title { margin-bottom: 0; }
-
-.category-sort-select {
-  min-width: 180px;
-  padding: 8px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: white;
-  color: #0f172a;
-  font-size: 0.85rem;
-  font-weight: 600;
-  outline: none;
-}
-
-.category-sort-select:focus {
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 3px rgba(79,70,229,0.08);
-}
-
-/* ── CARTA ACTUAL ── */
-.carta-card {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.92)),
-    repeating-linear-gradient(0deg, rgba(226,232,240,0.28) 0 1px, transparent 1px 26px);
-}
-
-.carta-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid #e2e8f0;
-  margin-bottom: 18px;
-}
-
+/* ── CARTA ── */
+.carta-card { background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.92)), repeating-linear-gradient(0deg, rgba(226,232,240,0.28) 0 1px, transparent 1px 26px); }
+.carta-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid #e2e8f0; margin-bottom: 18px; }
 .carta-title-row .form-card-title { margin-bottom: 4px; }
+.carta-subtitle { color: #64748b; font-size: 0.82rem; }
+.carta-total { background: #0f172a; color: white; padding: 6px 12px; border-radius: 999px; font-size: 0.76rem; font-weight: 800; white-space: nowrap; }
 
-.carta-subtitle {
-  color: #64748b;
-  font-size: 0.82rem;
-}
-
-.carta-total {
-  background: #0f172a;
-  color: white;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 0.76rem;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.menu-platos-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 14px;
-  padding: 14px 0 6px;
-}
-
-.menu-plato-card {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  gap: 12px;
-  padding: 12px;
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
-  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
-}
-
-.menu-plato-card:hover {
-  transform: translateY(-2px);
-  border-color: #cbd5e1;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
-}
-
-.menu-plato-media {
-  grid-row: 1 / span 2;
-  width: 72px;
-  height: 72px;
-  border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.menu-plato-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.menu-plato-icon {
-  font-size: 2rem;
-}
-
-.menu-plato-info {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-self: start;
-}
-
-.menu-plato-name {
-  color: #0f172a;
-  font-size: 0.96rem;
-  font-weight: 800;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.menu-plato-category {
-  color: #94a3b8;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.menu-plato-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  align-self: end;
-}
-
-.menu-plato-price {
-  color: #4f46e5;
-  font-size: 1rem;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-/* ── MENÚ CATEGORÍAS ── */
 .categoria-grupo { margin-bottom: 24px; }
 .categoria-grupo:last-child { margin-bottom: 0; }
-.categoria-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
-  background: linear-gradient(135deg, #ffffff, #f8fafc);
-  border: 1px solid #dbe3ee;
-  border-left: 5px solid #4f46e5;
-  border-radius: 14px;
-  margin-top: 18px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-}
-.categoria-visual {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.categoria-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
+.categoria-header { display: flex; align-items: center; gap: 14px; padding: 16px 18px; background: linear-gradient(135deg, #ffffff, #f8fafc); border: 1px solid #dbe3ee; border-left: 5px solid #4f46e5; border-radius: 14px; margin-top: 18px; box-shadow: 0 10px 24px rgba(15,23,42,0.06); }
+.categoria-visual { width: 48px; height: 48px; border-radius: 14px; background: #f8fafc; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
+.categoria-thumb { width: 100%; height: 100%; object-fit: cover; }
 .categoria-icono { font-size: 1.55rem; }
-.categoria-nombre { font-weight: 900; color: #0f172a; flex: 1; text-transform: uppercase; letter-spacing: 0; font-size: 1.08rem; }
+.categoria-nombre { font-weight: 900; color: #0f172a; flex: 1; text-transform: uppercase; font-size: 1.08rem; }
 .categoria-count { background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
 
-.btn-reorder {
-  width: 30px;
-  height: 30px;
-  background: #f8fafc;
-  color: #475569;
-  border: 1px solid #e2e8f0;
-  border-radius: 50%;
-  cursor: pointer;
-  font-weight: 800;
-  font-size: 0.9rem;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.btn-reorder:hover:not(:disabled) {
-  background: #e0e7ff;
-  color: #4338ca;
-  border-color: #c7d2fe;
-}
-
-.btn-reorder:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
+.menu-platos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; padding: 14px 0 6px; }
+.menu-plato-card { display: grid; grid-template-columns: 72px minmax(0,1fr); grid-template-rows: auto auto; gap: 12px; padding: 12px; background: white; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 8px 18px rgba(15,23,42,0.05); transition: transform 0.18s, box-shadow 0.18s; }
+.menu-plato-card:hover { transform: translateY(-2px); border-color: #cbd5e1; box-shadow: 0 14px 28px rgba(15,23,42,0.08); }
+.menu-plato-media { grid-row: 1/span 2; width: 72px; height: 72px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.menu-plato-photo { width: 100%; height: 100%; object-fit: cover; }
+.menu-plato-icon { font-size: 2rem; }
+.menu-plato-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; align-self: start; }
+.menu-plato-name { color: #0f172a; font-size: 0.96rem; font-weight: 800; line-height: 1.25; overflow-wrap: anywhere; }
+.menu-plato-category { color: #94a3b8; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+.menu-plato-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; align-self: end; }
+.menu-plato-price { color: #4f46e5; font-size: 1rem; font-weight: 900; white-space: nowrap; }
 
 /* ── EMPLEADOS ── */
 .empleado-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
 .empleado-row:last-child { border-bottom: none; }
-
-.empleado-avatar {
-  width: 38px; height: 38px;
-  background: #4f46e5;
-  color: white;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 1rem; flex-shrink: 0;
-}
-
+.empleado-avatar { width: 38px; height: 38px; background: #4f46e5; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
 .rol-badge { font-size: 0.72rem; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: capitalize; flex-shrink: 0; }
 .rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
 .rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
 .rol-badge.cocinero { background: #fef3c7; color: #b45309; }
-
 .activo-toggle { border: none; padding: 4px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; cursor: pointer; transition: filter 0.2s; flex-shrink: 0; }
 .activo-toggle.activo   { background: #dcfce7; color: #16a34a; }
 .activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
 .activo-toggle:hover { filter: brightness(0.94); }
-
-.filtros-rol { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.filtros-rol { display: flex; gap: 8px; flex-wrap: wrap; }
 .filtros-rol button { background: #f1f5f9; border: none; padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; color: #64748b; cursor: pointer; transition: 0.2s; }
 .filtros-rol button.active { background: #4f46e5; color: white; }
 .filtros-rol button:hover:not(.active) { background: #e2e8f0; }
@@ -2299,297 +1793,73 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .emoji-preview { font-size: 1.4rem; line-height: 1; }
 .picker-popup { position: absolute; top: calc(100% + 8px); left: 0; z-index: 100; box-shadow: 0 10px 25px rgba(0,0,0,0.12); border-radius: 10px; }
 
+.producto-media-controls { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.btn-upload-photo { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 14px; background: #fff7ed; color: #c2410c; border: 1px dashed #fdba74; border-radius: 8px; cursor: pointer; font-size: 0.88rem; font-weight: 700; transition: all 0.2s; }
+.btn-upload-photo:hover { background: #ffedd5; border-color: #fb923c; }
+.btn-upload-photo.loading { opacity: 0.7; cursor: progress; }
+.btn-upload-photo input { display: none; }
+
+.producto-photo-preview { display: flex; align-items: center; gap: 12px; padding: 10px; margin-top: 8px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; }
+.producto-photo-preview img { width: 68px; height: 68px; object-fit: cover; border-radius: 10px; border: 1px solid #cbd5e1; }
+.btn-remove-photo { border: none; background: #fee2e2; color: #dc2626; padding: 8px 12px; border-radius: 10px; font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+.btn-remove-photo:hover { background: #fecaca; }
+
+/* ── CATEGORÍAS MODAL ── */
+.categoria-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.categoria-list-toolbar .form-card-title { margin-bottom: 0; }
+.category-sort-select { min-width: 180px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: white; color: #0f172a; font-size: 0.85rem; font-weight: 600; outline: none; }
+.category-sort-select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
+
 /* ── EMPTY STATE ── */
 .empty-state-box { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 10px; padding: 20px; text-align: center; color: #94a3b8; font-size: 0.9rem; }
 .card-container { background: white; border-radius: 14px; padding: 24px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 
 /* ── MI NEGOCIO ── */
-.logo-upload-area {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 20px;
-  background: #f8fafc;
-  border: 2px dashed #e2e8f0;
-  border-radius: 12px;
-}
-
-.logo-preview {
-  width: 100px;
-  height: 100px;
-  object-fit: contain;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  padding: 4px;
-}
-
-.logo-placeholder {
-  width: 100px;
-  height: 100px;
-  background: #f1f5f9;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #94a3b8;
-  font-size: 0.85rem;
-  border: 1px dashed #cbd5e1;
-}
-
-.btn-upload-logo {
-  padding: 8px 16px;
-  background: #4f46e5;
-  color: white;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
+.logo-upload-area { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 20px; background: #f8fafc; border: 2px dashed #e2e8f0; border-radius: 12px; }
+.logo-preview { width: 100px; height: 100px; object-fit: contain; border-radius: 12px; border: 1px solid #e2e8f0; background: white; padding: 4px; }
+.logo-placeholder { width: 100px; height: 100px; background: #f1f5f9; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 0.85rem; border: 1px dashed #cbd5e1; }
+.btn-upload-logo { padding: 8px 16px; background: #4f46e5; color: white; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
 .btn-upload-logo:hover { background: #4338ca; }
 .btn-upload-logo.loading { background: #a5b4fc; cursor: not-allowed; }
-
 .upload-hint { font-size: 0.72rem; color: #94a3b8; margin: 0; }
-
 .color-picker-row { display: flex; align-items: center; gap: 12px; }
-
-.color-input {
-  width: 48px;
-  height: 48px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  padding: 2px;
-  background: none;
-}
-
+.color-input { width: 48px; height: 48px; border: none; border-radius: 8px; cursor: pointer; padding: 2px; background: none; }
 .color-value { font-size: 0.88rem; font-weight: 600; color: #475569; font-family: monospace; }
-
-.color-preview-pill {
-  padding: 6px 14px;
-  border-radius: 20px;
-  color: white;
-  font-weight: 700;
-  font-size: 0.85rem;
-}
-
+.color-preview-pill { padding: 6px 14px; border-radius: 20px; color: white; font-weight: 700; font-size: 0.85rem; }
 .color-presets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-
-.color-preset-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  cursor: pointer;
-  transition: transform 0.15s, border-color 0.15s;
-}
-
+.color-preset-btn { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform 0.15s, border-color 0.15s; }
 .color-preset-btn:hover { transform: scale(1.15); }
 .color-preset-btn.active { border-color: #0f172a; transform: scale(1.15); }
 
-/* ── PREVIEWS ── */
+/* ── PREVIEWS NEGOCIO ── */
 .preview-sidebar { background: white; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
-
-.preview-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 2px solid #4f46e5;
-  background: white;
-  transition: border-color 0.3s;
-}
-
+.preview-brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 2px solid #4f46e5; background: white; transition: border-color 0.3s; }
 .preview-logo { width: 36px; height: 36px; object-fit: contain; border-radius: 8px; }
-
-.producto-media-controls {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
-.btn-upload-photo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 42px;
-  padding: 0 14px;
-  background: #fff7ed;
-  color: #c2410c;
-  border: 1px dashed #fdba74;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 0.88rem;
-  font-weight: 700;
-  transition: all 0.2s;
-}
-
-.btn-upload-photo:hover {
-  background: #ffedd5;
-  border-color: #fb923c;
-}
-
-.btn-upload-photo.loading {
-  opacity: 0.7;
-  cursor: progress;
-}
-
-.btn-upload-photo input {
-  display: none;
-}
-
-.producto-photo-preview {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  margin-top: 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.producto-photo-preview img {
-  width: 68px;
-  height: 68px;
-  object-fit: cover;
-  border-radius: 10px;
-  border: 1px solid #cbd5e1;
-}
-
-.btn-remove-photo {
-  border: none;
-  background: #fee2e2;
-  color: #dc2626;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.btn-remove-photo:hover {
-  background: #fecaca;
-}
-
-.picker-popup {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 100;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.12);
-  border-radius: 10px;
-}
-
+.preview-logo-placeholder { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 1.1rem; flex-shrink: 0; transition: background 0.3s; }
 .preview-nombre { font-size: 0.9rem; font-weight: 700; color: #0f172a; }
 .preview-powered { font-size: 0.62rem; color: #94a3b8; font-weight: 500; }
-
 .preview-nav { padding: 8px; display: flex; flex-direction: column; gap: 4px; background: #f8fafc; }
 .preview-nav-item { padding: 8px 12px; border-radius: 6px; color: white; font-size: 0.82rem; font-weight: 600; transition: background 0.3s; }
 .preview-nav-item-inactive { padding: 8px 12px; border-radius: 6px; color: #64748b; font-size: 0.82rem; }
-
-.preview-cocina-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border-radius: 10px;
-  background: #1e293b;
-}
-
+.preview-cocina-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-radius: 10px; background: #1e293b; }
 .preview-cocina-left { display: flex; align-items: center; gap: 10px; }
-
-.preview-logo-sm {
-  width: 24px;
-  height: 24px;
-  object-fit: contain;
-  border-radius: 4px;
-  background: white;
-}
-
-.preview-logo-sm-placeholder {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-weight: 800;
-  font-size: 0.75rem;
-  flex-shrink: 0;
-  transition: background 0.3s;
-}
-
+.preview-logo-sm { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; background: white; }
+.preview-logo-sm-placeholder { width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 0.75rem; flex-shrink: 0; transition: background 0.3s; }
 .preview-cocina-nombre { font-size: 0.9rem; font-weight: 700; color: #f1f5f9; }
 .preview-cocina-badge { font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; color: white; transition: background 0.3s; }
 .preview-cocina-role { font-size: 0.78rem; color: #64748b; font-weight: 600; }
 
 /* ── MODALES ── */
-.modal-backdrop {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(4px);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: #f8fafc;
-  width: 860px;
-  max-width: 95vw;
-  max-height: 90vh;
-  border-radius: 14px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
-  animation: modalIn 0.25s ease-out;
-}
-
+.modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,0.6); backdrop-filter: blur(4px); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+.modal-content { background: #f8fafc; width: 860px; max-width: 95vw; max-height: 90vh; border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.2); animation: modalIn 0.25s ease-out; }
 .modal-sm { width: 700px; }
-.modal-categorias {
-  width: 1080px;
-  max-width: 98vw;
-}
-
-.modal-categorias .dos-columnas {
-  grid-template-columns: 360px minmax(0, 1fr);
-}
-
-.modal-categorias .modal-body {
-  overflow-x: hidden;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  background: white;
-  border-bottom: 1px solid #e2e8f0;
-  flex-shrink: 0;
-}
-
+.modal-categorias { width: 1080px; max-width: 98vw; }
+.modal-categorias .dos-columnas { grid-template-columns: 360px minmax(0,1fr); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; background: white; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; }
 .modal-header h2 { font-size: 1.2rem; font-weight: 800; color: #0f172a; }
 .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
 
-.modal-ticket {
-  background: white;
-  width: 380px;
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
-  animation: modalIn 0.25s ease-out;
-}
-
+.modal-ticket { background: white; width: 380px; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.2); animation: modalIn 0.25s ease-out; }
 .ticket-paper-admin { padding: 28px 24px 20px; font-family: 'Courier New', Courier, monospace; }
 .ticket-top { text-align: center; margin-bottom: 16px; }
 .ticket-top h2 { font-size: 1.4rem; font-weight: 900; margin: 0; }
@@ -2599,133 +1869,15 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .ticket-divider { border-top: 1px dashed #cbd5e1; margin: 14px 0; }
 .ticket-items-admin { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
 .t-item-admin { display: flex; font-size: 0.92rem; gap: 8px; }
-.t-qty-admin  { width: 30px; font-weight: 700; flex-shrink: 0; }
-.t-name-admin { flex: 1; word-break: break-word; }
-.t-price-admin{ font-weight: 700; white-space: nowrap; }
+.t-qty-admin   { width: 30px; font-weight: 700; flex-shrink: 0; }
+.t-name-admin  { flex: 1; word-break: break-word; }
+.t-price-admin { font-weight: 700; white-space: nowrap; }
 .ticket-total-row { display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 900; color: #0f172a; }
 
-.ticket-total-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 1.25rem;
-  font-weight: 900;
-  color: #0f172a;
-}
-
-/* ── MODAL EDITAR FACTURA ── */
-.edit-items-container {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 4px;
-}
-
-.edit-items-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  margin: 8px 0;
-}
-
-.edit-item-row {
-  display: flex;
-  align-items: center;
-  background: white;
-  padding: 8px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  gap: 10px;
-}
-
-/* ── REGISTRO / FACTURAS ── */
-.factura-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  padding: 16px;
-  border-bottom: 1px solid #f1f5f9;
-  background: white;
-  border-radius: 8px;
-  margin-bottom: 8px;
-  border: 1px solid #e2e8f0;
-}
-
-.factura-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-
-.factura-fecha {
-  font-weight: 700;
-  color: #0f172a;
-  font-size: 0.95rem;
-}
-
-.factura-fecha-apertura {
-  color: #64748b;
-  font-size: 0.85rem;
-}
-
-.factura-mesa {
-  color: #4f46e5;
-  font-weight: 600;
-  font-size: 0.9rem;
-  margin-top: 4px;
-}
-
-.factura-camarero {
-  color: #64748b;
-  font-size: 0.8rem;
-}
-
-.factura-items {
-  flex: 2;
-  font-size: 0.85rem;
-  color: #475569;
-  max-height: 100px;
-  overflow-y: auto;
-}
-
-.factura-items ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.factura-items li {
-  margin-bottom: 2px;
-}
-
-.factura-total {
-  font-size: 1.2rem;
-  font-weight: 800;
-  color: #10b981;
-  text-align: right;
-  min-width: 80px;
-}
-
-.btn-icon-text:hover {
-  background: #fee2e2;
-  color: #dc2626;
-}
-
-/* ── MODAL EDITAR ── */
-.edit-item-name {
-  flex: 1;
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+.edit-items-container { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 4px; }
+.edit-items-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; margin: 8px 0; }
+.edit-item-row { display: flex; align-items: center; background: white; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; gap: 10px; }
+.edit-item-name { flex: 1; font-size: 0.88rem; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edit-item-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .edit-sep { font-size: 0.8rem; color: #94a3b8; }
 .edit-input-sm { width: 58px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; text-align: center; outline: none; font-size: 0.88rem; }
@@ -2735,11 +1887,7 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .add-item-row { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ── ANIMACIONES ── */
-@keyframes modalIn {
-  from { transform: translateY(16px) scale(0.98); opacity: 0; }
-  to   { transform: translateY(0) scale(1); opacity: 1; }
-}
-
+@keyframes modalIn { from { transform: translateY(16px) scale(0.98); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
@@ -2749,7 +1897,6 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
   .form-card { position: static; }
   .modal-categorias .dos-columnas { grid-template-columns: 1fr; }
 }
-
 @media (max-width: 900px) {
   .content { padding: 20px; }
   .modal-content { width: 95%; }
@@ -2761,26 +1908,8 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
   .tickets-grid { grid-template-columns: 1fr; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
 }
-
 @media (max-width: 600px) {
   .kpi-grid { grid-template-columns: 1fr; }
   .finanzas-filtros { flex-direction: column; }
-  .menu-plato-card {
-    grid-template-columns: 60px minmax(0, 1fr);
-  }
-
-  .menu-plato-media {
-    width: 60px;
-    height: 60px;
-  }
-
-  .carta-title-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .carta-total {
-    width: fit-content;
-  }
 }
 </style>

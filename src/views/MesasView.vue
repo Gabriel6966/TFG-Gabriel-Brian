@@ -11,7 +11,6 @@ import { useNegocio } from '../composables/useNegocio'
 
 import PosSidebar from '../components/pos/PosSidebar.vue'
 import PosFloorMap from '../components/pos/PosFloorMap.vue'
-import PosOrderPanel from '../components/pos/PosOrderPanel.vue'
 
 const cartStore = CartStore()
 const { currentUser, logout, localId } = useAuth()
@@ -37,15 +36,8 @@ interface Categoria {
   orderIndex?: number
 }
 
-interface Notificacion {
-  id: string
-  mesaNumero: number
-  texto: string
-  comandaId: string
-  mesaId: string
-}
+// ── ESTADO ────────────────────────────────────────────────────────
 
-// Estado reactivo
 const tables = ref<any[]>([])
 const productos = ref<any[]>([])
 const categorias = ref<string[]>([])
@@ -55,11 +47,11 @@ const mesaSeleccionada = ref<number | null>(null)
 const mesaSeleccionadaId = ref<string | null>(null)
 const categoriaSeleccionada = ref('')
 const isEnviando = ref(false)
-
-// Estado UI
 const zonaActiva = ref('')
 const filtroActivo = ref('todas')
 const mostrarModalCarta = ref(false)
+const mostrarModalCamarero = ref(false)
+const hayProductosCamarero = ref(false)
 
 // Modal Ticket
 const mostrarModalTicket = ref(false)
@@ -71,9 +63,11 @@ const mostrarModalMonitor = ref(false)
 const comandasActivas = ref<any[]>([])
 const mesaMonitorSeleccionada = ref<string | null>(null)
 
-// NOTIFICACIONES
+// ── NOTIFICACIONES ────────────────────────────────────────────────
+// Guardamos snapshot anterior para detectar cambios en líneas individuales
 const comandasNotificadas = ref<Set<string>>(new Set())
-const notificaciones = ref<Notificacion[]>([])
+const lineasNotificadas = ref<Set<string>>(new Set()) // clave: `${comandaId}_${lineaIndex}`
+const hayAlgoListo = ref(false) // controla el badge rojo del monitor
 
 let audioContext: AudioContext | null = null
 
@@ -115,36 +109,93 @@ const reproducirSonidoCampana = () => {
   }
 }
 
-const descartarNotificacion = async (notif: Notificacion) => {
-  notificaciones.value = notificaciones.value.filter(n => n.id !== notif.id)
-  if (localId.value) {
-    try {
-      await updateDoc(doc(db, `locales/${localId.value}/comandas`, notif.comandaId), {
-        estado: 'entregado'
+// Recalcula si hay algo listo para el badge
+const recalcularHayAlgoListo = () => {
+  // Badge monitor cocina
+  const hayPendienteDeServir = comandasActivas.value.some(c => {
+    if (c.destino === 'camarero') return false
+    if (c.estado === 'entregado' || c.estado === 'pagado') return false
+    if (c.estado === 'listo') return true
+    if (c.estadoLineas) {
+      return Object.entries(c.estadoLineas).some(([idx, val]) => {
+        if (val !== true) return false
+        return !(c.lineasEntregadas?.[idx] === true)
       })
-      await updateDoc(doc(db, `locales/${localId.value}/mesas`, notif.mesaId), {
-        estado: 'ocupada'
-      })
-    } catch (e) {
-      console.error('Error al marcar como entregado:', e)
     }
+    return false
+  })
+  hayAlgoListo.value = hayPendienteDeServir
+
+  // Badge panel camarero
+  hayProductosCamarero.value = comandasActivas.value.some(
+    c => c.destino === 'camarero' && c.estado === 'para_camarero'
+  )
+}
+
+const comandasListasCount = computed(() => {
+  // Cuenta comandas con al menos una línea lista O toda la comanda lista
+  return comandasActivas.value.filter(c => {
+    if (c.estado === 'listo') return true
+    if (c.estadoLineas) return Object.values(c.estadoLineas).some(v => v === true)
+    return false
+  }).length
+})
+
+const comandasCamarero = computed(() =>
+  comandasActivas.value.filter(c =>
+    c.destino === 'camarero' && c.estado === 'para_camarero'
+  )
+)
+
+const servirComandaCamarero = async (comandaId: string, mesaId: string) => {
+  if (!localId.value) return
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/comandas`, comandaId), {
+      estado: 'entregado'
+    })
+    recalcularHayAlgoListo()
+  } catch (error) {
+    console.error('Error al marcar como servido:', error)
   }
 }
 
-const descartarTodasNotificaciones = () => {
-  notificaciones.value = []
+const servirLineaCamarero = async (comanda: any, lineaIndex: string | number) => {
+  if (!localId.value) return
+  try {
+    const lineasEntregadas: Record<string, boolean> = { ...(comanda.lineasEntregadas ?? {}) }
+    lineasEntregadas[String(lineaIndex)] = true
+
+    const todasEntregadas = comanda.lineas.every((_: any, i: number) =>
+      lineasEntregadas[String(i)] === true
+    )
+
+    if (todasEntregadas) {
+      await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
+        estado: 'entregado',
+        lineasEntregadas
+      })
+    } else {
+      await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
+        lineasEntregadas
+      })
+    }
+    recalcularHayAlgoListo()
+  } catch (error) {
+    console.error('Error al servir línea:', error)
+  }
 }
 
-const comandasListasCount = computed(() =>
-  comandasActivas.value.filter(c => c.estado === 'listo').length
-)
+// ── LISTENERS ────────────────────────────────────────────────────
 
-// LISTENERS
 let unsubscribeZonas: (() => void) | null = null
 let unsubscribeMesas: (() => void) | null = null
 let unsubscribeProductos: (() => void) | null = null
 let unsubscribeCategorias: (() => void) | null = null
 let unsubscribeComandas: (() => void) | null = null
+
+// Mapa de estado anterior de líneas para detectar cambios
+const estadoLineasAnterior = ref<Record<string, Record<string, boolean>>>({})
+const primeraVez = ref(true)
 
 onMounted(() => {
   if (!localId.value) return
@@ -194,31 +245,58 @@ onMounted(() => {
 
   const qComandas = query(
     collection(db, `locales/${localId.value}/comandas`),
-    where('estado', 'in', ['en_cocina', 'listo', 'entregado'])
+    where('estado', 'in', ['en_cocina', 'listo', 'entregado', 'para_camarero'])
   )
+
   unsubscribeComandas = onSnapshot(qComandas, (snapshot) => {
     const nuevasComandas = snapshot.docs.map(d => ({ id: d.id, ...d.data() }))
 
-    for (const item of nuevasComandas) {
-      const comanda = item as any
-      if (comanda.estado === 'listo' && !comandasNotificadas.value.has(comanda.id)) {
-        comandasNotificadas.value.add(comanda.id)
-        notificaciones.value.push({
-          id: comanda.id,
-          mesaNumero: comanda.mesaNumero || 0,
-          texto: `Mesa ${comanda.mesaNumero || '?'} - Pedido listo para recoger`,
-          comandaId: comanda.id,
-          mesaId: comanda.mesaId || ''
-        })
-        reproducirSonidoCampana()
+    if (primeraVez.value) {
+      // Primera carga: guardamos el estado inicial sin notificar
+      nuevasComandas.forEach((c: any) => {
+        estadoLineasAnterior.value[c.id] = { ...(c.estadoLineas ?? {}) }
+        if (c.estado === 'listo') comandasNotificadas.value.add(c.id)
+        if (c.estadoLineas) {
+          Object.entries(c.estadoLineas).forEach(([idx, val]) => {
+            if (val) lineasNotificadas.value.add(`${c.id}_${idx}`)
+          })
+        }
+      })
+      primeraVez.value = false
+    } else {
+      // Actualizaciones posteriores: detectamos cambios
+      nuevasComandas.forEach((c: any) => {
+        // 1. Comanda entera pasó a listo
+        if (c.estado === 'listo' && !comandasNotificadas.value.has(c.id)) {
+          comandasNotificadas.value.add(c.id)
+          reproducirSonidoCampana()
+        }
+
+        // 2. Líneas individuales marcadas como listas
+        if (c.estadoLineas) {
+          const anterior = estadoLineasAnterior.value[c.id] ?? {}
+          Object.entries(c.estadoLineas).forEach(([idx, val]) => {
+            const clave = `${c.id}_${idx}`
+            if (val === true && !anterior[idx] && !lineasNotificadas.value.has(clave)) {
+              lineasNotificadas.value.add(clave)
+              reproducirSonidoCampana()
+            }
+          })
+        }
+
+        // Actualizamos estado anterior
+        estadoLineasAnterior.value[c.id] = { ...(c.estadoLineas ?? {}) }
+      })
+
+      // Limpiamos ids que ya no existen
+      const idsActivos = new Set(nuevasComandas.map((c: any) => c.id))
+      for (const id of comandasNotificadas.value) {
+        if (!idsActivos.has(id)) comandasNotificadas.value.delete(id)
       }
     }
 
-    const idsActivos = new Set(nuevasComandas.map((c: any) => c.id))
-    for (const id of comandasNotificadas.value) {
-      if (!idsActivos.has(id)) comandasNotificadas.value.delete(id)
-    }
     comandasActivas.value = nuevasComandas
+    recalcularHayAlgoListo()
   })
 })
 
@@ -232,7 +310,7 @@ onUnmounted(() => {
   detenerNegocio()
 })
 
-// COMPUTED
+// ── COMPUTED ──────────────────────────────────────────────────────
 
 const cuentaFinalMesa = computed(() => {
   if (!mesaIdTicket.value) return { items: [], total: 0 }
@@ -284,7 +362,8 @@ const mesasConComandas = computed(() => {
         tieneListos: false
       })
     }
-    if (c.estado === 'listo') {
+    // Tiene listos si la comanda entera está lista O si alguna línea individual está lista
+    if (c.estado === 'listo' || (c.estadoLineas && Object.values(c.estadoLineas).some(v => v === true))) {
       const mesa = mesasMap.get(c.mesaId)
       if (mesa) mesa.tieneListos = true
     }
@@ -328,19 +407,7 @@ const mesaActual = computed(() =>
   tables.value.find(t => t.id === mesaSeleccionadaId.value)
 )
 
-const abrirCartaPedido = () => {
-  if (!mesaSeleccionada.value) return
-  if (!categoriaSeleccionada.value && categoriasCarta.value.length > 0) {
-    categoriaSeleccionada.value = categoriasCarta.value[0].nombre
-  }
-  mostrarModalCarta.value = true
-}
-
-const cerrarCartaPedido = () => {
-  mostrarModalCarta.value = false
-}
-
-// ACCIONES
+// ── ACCIONES ──────────────────────────────────────────────────────
 
 const openTable = (table: any) => {
   inicializarAudio()
@@ -354,6 +421,18 @@ const openTable = (table: any) => {
     mesaSeleccionadaId.value = table.id
     cartStore.setTable(table.nr)
   }
+}
+
+const abrirCartaPedido = () => {
+  if (!mesaSeleccionada.value) return
+  if (!categoriaSeleccionada.value && categoriasCarta.value.length > 0) {
+    categoriaSeleccionada.value = categoriasCarta.value[0].nombre
+  }
+  mostrarModalCarta.value = true
+}
+
+const cerrarCartaPedido = () => {
+  mostrarModalCarta.value = false
 }
 
 const actualizarPosicionMesa = (id: string, x: number, y: number) => {
@@ -372,12 +451,18 @@ const marcarComoEntregada = async (comandaId: string, mesaId: string) => {
     })
     const quedanPendientes = comandasActivas.value.some(
       c => c.mesaId === mesaId && c.id !== comandaId &&
-        c.estado !== 'entregado' && c.estado !== 'listo'
+      c.estado !== 'entregado' && c.estado !== 'listo'
     )
     if (!quedanPendientes) {
       await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaId), { estado: 'ocupada' })
     }
-    notificaciones.value = notificaciones.value.filter(n => n.comandaId !== comandaId)
+    // Limpiamos notificaciones de esta comanda
+    comandasNotificadas.value.delete(comandaId)
+    // Limpiamos líneas notificadas de esta comanda
+    for (const clave of lineasNotificadas.value) {
+      if (clave.startsWith(`${comandaId}_`)) lineasNotificadas.value.delete(clave)
+    }
+    recalcularHayAlgoListo()
   } catch (error) {
     console.error('Error al entregar comanda:', error)
   }
@@ -451,7 +536,11 @@ const enviarPedido = async () => {
     const usuarioDoc = await getDoc(doc(db, 'usuarios', currentUser.value.uid))
     const usuarioNombre = usuarioDoc.exists() ? usuarioDoc.data().nombre : currentUser.value.email
 
-    await addDoc(collection(db, `locales/${localId.value}/comandas`), {
+    // Separamos líneas por destino
+    const lineasCocina   = cartStore.items.filter(item => !item.sirveCamarero)
+    const lineasCamarero = cartStore.items.filter(item =>  item.sirveCamarero)
+
+    const baseComanda = {
       mesaId: mesaSeleccionadaId.value,
       mesaNumero: mesaSeleccionada.value,
       zona: mesaObj?.zona || 'Sin zona',
@@ -460,16 +549,41 @@ const enviarPedido = async () => {
       usuarioEmail: currentUser.value.email,
       fechaHora: Timestamp.now(),
       fechaDia: new Date().toISOString().split('T')[0],
-      estado: 'en_cocina',
-      importeTotal: cartStore.totalPrice,
-      lineas: cartStore.items.map(item => ({
-        productoId: item.id,
-        nombre: item.name,
-        precio: item.price,
-        cantidad: item.quantity,
-        notas: item.notes ?? ''
-      }))
-    })
+    }
+
+    // Comanda para cocina
+    if (lineasCocina.length > 0) {
+      await addDoc(collection(db, `locales/${localId.value}/comandas`), {
+        ...baseComanda,
+        estado: 'en_cocina',
+        destino: 'cocina',
+        importeTotal: lineasCocina.reduce((acc, i) => acc + i.price * i.quantity, 0),
+        lineas: lineasCocina.map(item => ({
+          productoId: item.id,
+          nombre: item.name,
+          precio: item.price,
+          cantidad: item.quantity,
+          notas: item.notes ?? ''
+        }))
+      })
+    }
+
+    // Comanda para camarero
+    if (lineasCamarero.length > 0) {
+      await addDoc(collection(db, `locales/${localId.value}/comandas`), {
+        ...baseComanda,
+        estado: 'para_camarero',
+        destino: 'camarero',
+        importeTotal: lineasCamarero.reduce((acc, i) => acc + i.price * i.quantity, 0),
+        lineas: lineasCamarero.map(item => ({
+          productoId: item.id,
+          nombre: item.name,
+          precio: item.price,
+          cantidad: item.quantity,
+          notas: item.notes ?? ''
+        }))
+      })
+    }
 
     await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
       estado: 'preparando'
@@ -486,32 +600,50 @@ const enviarPedido = async () => {
     isEnviando.value = false
   }
 }
+
+// Al abrir el monitor marcamos como visto
+const abrirMonitor = () => {
+  mostrarModalMonitor.value = true
+}
+
+// Al cerrar el monitor limpiamos el badge si todo está entregado
+const cerrarMonitor = () => {
+  mostrarModalMonitor.value = false
+  mesaMonitorSeleccionada.value = null
+  recalcularHayAlgoListo()
+}
+
+const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) => {
+  if (!localId.value) return
+  try {
+    const estadoLineas = { ...(comanda.estadoLineas ?? {}) }
+    const lineasEntregadas: Record<string, boolean> = { ...(comanda.lineasEntregadas ?? {}) }
+    lineasEntregadas[String(lineaIndex)] = true
+
+    await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
+      lineasEntregadas
+    })
+
+    const todasEntregadas = comanda.lineas.every((_: any, i: number) => {
+      const estaLista = estadoLineas[String(i)] === true
+      return !estaLista || lineasEntregadas[String(i)] === true
+    })
+
+    if (todasEntregadas && comanda.estado === 'listo') {
+      await marcarComoEntregada(comanda.id, comanda.mesaId)
+    } else {
+      recalcularHayAlgoListo()
+    }
+  } catch (error) {
+    console.error('Error al marcar línea como entregada:', error)
+  }
+}
 </script>
 
 <template>
   <div class="pos-master-layout" @click="inicializarAudio">
-
-    <!-- BANNER NOTIFICACIONES -->
-    <transition name="banner-slide">
-      <div v-if="notificaciones.length > 0" class="notificaciones-banner">
-        <div class="banner-content">
-          <span class="banner-icon">AVISO</span>
-          <div class="banner-lista">
-            <div v-for="notif in notificaciones" :key="notif.id" class="banner-item">
-              <span class="banner-texto">{{ notif.texto }}</span>
-              <button class="btn-banner-entregar" @click="descartarNotificacion(notif)">Marcar servido</button>
-            </div>
-          </div>
-          <button v-if="notificaciones.length > 1" class="btn-banner-all" @click="descartarTodasNotificaciones">
-            Descartar todas
-          </button>
-        </div>
-      </div>
-    </transition>
-
     <div class="pos-inner-layout">
 
-      <!-- SIDEBAR -->
       <aside class="pos-sidebar-container">
         <PosSidebar
           :user-email="currentUser?.email ?? undefined"
@@ -521,15 +653,17 @@ const enviarPedido = async () => {
           :zonas="zonas"
           :zona-activa="zonaActiva"
           :comandas-listas-count="comandasListasCount"
+          :hay-algo-listo="hayAlgoListo"
+          :hay-productos-camarero="hayProductosCamarero"
           @logout="logout"
           @cambiar-filtro="(f) => filtroActivo = f"
           @cambiar-zona="(z) => zonaActiva = z"
-          @abrir-modal-monitor="mostrarModalMonitor = true"
+          @abrir-modal-monitor="abrirMonitor"
           @abrir-modal-factura="abrirModalFactura"
+          @abrir-panel-camarero="mostrarModalCamarero = true"
         />
       </aside>
 
-      <!-- CENTRO -->
       <main class="pos-center-container">
         <header class="map-header">
           <div class="header-spacer"></div>
@@ -564,17 +698,8 @@ const enviarPedido = async () => {
         </div>
       </main>
 
-      <!-- PANEL PEDIDO -->
-      <aside class="pos-order-container">
-        <PosOrderPanel
-          :mesa-seleccionada="mesaSeleccionada"
-          :is-enviando="isEnviando"
-          @enviar="enviarPedido"
-        />
-      </aside>
     </div>
 
-    <!-- MODAL TOMAR NOTA -->
     <transition name="fade">
       <div v-if="mostrarModalCarta" class="modal-backdrop carta-backdrop" @click.self="cerrarCartaPedido">
         <div class="tomar-nota-modal">
@@ -682,7 +807,6 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
-    <!-- MODAL TICKET -->
     <transition name="fade">
       <div v-if="mostrarModalTicket" class="modal-backdrop" @click.self="mostrarModalTicket = false">
         <div class="ticket-modal">
@@ -732,7 +856,6 @@ const enviarPedido = async () => {
             <div v-else class="ticket-empty">(La mesa no tiene consumo registrado)</div>
 
             <div class="ticket-divider"></div>
-
             <div class="ticket-total">
               <span>TOTAL</span>
               <span>{{ cuentaFinalMesa.total.toFixed(2) }}€</span>
@@ -754,13 +877,12 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
-    <!-- MODAL MONITOR -->
     <transition name="fade">
-      <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
+      <div v-if="mostrarModalMonitor" class="modal-backdrop" @click.self="cerrarMonitor">
         <div class="monitor-modal">
           <div class="monitor-header">
             <h2>📺 Estado de Pedidos en Tiempo Real</h2>
-            <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalMonitor = false; mesaMonitorSeleccionada = null">
+            <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="cerrarMonitor">
               Cerrar
             </button>
           </div>
@@ -806,10 +928,30 @@ const enviarPedido = async () => {
                     </span>
                   </div>
                   <ul class="c-lines">
-                    <li v-for="linea in comanda.lineas" :key="linea.productoId">
-                      <strong>{{ linea.cantidad }}x</strong> {{ linea.nombre }}
-                    </li>
-                  </ul>
+                    <li
+                      v-for="(linea, idx) in comanda.lineas"
+                      :key="idx"
+                      class="c-linea"
+                      :class="{
+                        'c-linea-lista':     comanda.estadoLineas?.[String(idx)] === true,
+                        'c-linea-entregada': comanda.lineasEntregadas?.[String(idx)] === true
+                      }"
+                    >
+                      <span class="c-linea-check">
+                        {{ comanda.lineasEntregadas?.[String(idx)] ? '✓✓' : comanda.estadoLineas?.[String(idx)] ? '✓' : '○' }}
+                      </span>
+                        <span class="c-linea-texto">
+                          <strong>{{ linea.cantidad }}x</strong> {{ linea.nombre }}
+                        </span>
+                        <button
+                      v-if="comanda.estadoLineas?.[String(idx)] === true && !comanda.lineasEntregadas?.[String(idx)]"
+                      class="btn-servir-linea"
+                      @click="marcarLineaEntregada(comanda, idx)"
+                    >
+                      Servir
+                    </button>
+                      </li>
+                    </ul>
                   <div class="c-actions" v-if="comanda.estado === 'listo'">
                     <button
                       class="btn-entregar"
@@ -827,11 +969,75 @@ const enviarPedido = async () => {
       </div>
     </transition>
 
+    <transition name="fade">
+      <div v-if="mostrarModalCamarero" class="modal-backdrop" @click.self="mostrarModalCamarero = false">
+        <div class="monitor-modal">
+          <div class="monitor-header">
+            <h2>🍺 Para servir — Camarero</h2>
+            <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalCamarero = false">
+              Cerrar
+            </button>
+          </div>
+
+          <div class="camarero-panel-body">
+            <div v-if="comandasCamarero.length === 0" class="ticket-empty" style="margin: 40px auto;">
+              No hay productos pendientes de servir.
+            </div>
+
+            <div v-else class="camarero-cards-grid">
+              <div
+                v-for="comanda in comandasCamarero"
+                :key="comanda.id"
+                class="camarero-card"
+              >
+                <div class="camarero-card-header">
+                  <div>
+                    <span class="camarero-mesa">Mesa {{ comanda.mesaNumero }}</span>
+                    <span class="camarero-zona">{{ comanda.zona }}</span>
+                  </div>
+                  <span class="camarero-hora">
+                    🕐 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
+                  </span>
+                </div>
+
+                <ul class="camarero-lineas">
+                  <li
+                    v-for="(linea, idx) in comanda.lineas"
+                    :key="idx"
+                    class="camarero-linea"
+                    :class="{ 'camarero-linea-servida': comanda.lineasEntregadas?.[String(idx)] === true }"
+                  >
+                    <span class="camarero-linea-qty">{{ linea.cantidad }}x</span>
+                    <span class="camarero-linea-nombre">{{ linea.nombre }}</span>
+                    <button
+                      v-if="!comanda.lineasEntregadas?.[String(idx)]"
+                      class="btn-servir-linea-camarero"
+                      @click="servirLineaCamarero(comanda, idx)"
+                    >
+                      Servir
+                    </button>
+                    <span v-else class="servido-check">✓ Servido</span>
+                  </li>
+                </ul>
+
+                <button
+                  class="btn-todo-servido"
+                  @click="servirComandaCamarero(comanda.id, comanda.mesaId)"
+                >
+                  ✅ Todo servido
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>
 
 <style scoped>
-/* LAYOUT */
+/* ── LAYOUT ── */
 .pos-master-layout {
   display: flex;
   height: 100vh;
@@ -844,63 +1050,11 @@ const enviarPedido = async () => {
 
 .pos-inner-layout { display: flex; flex: 1; overflow: hidden; }
 
-/* NOTIFICACIONES */
-.notificaciones-banner {
-  background: linear-gradient(135deg, #16a34a, #15803d);
-  color: white;
-  padding: 12px 24px;
-  z-index: 100;
-  flex-shrink: 0;
-  box-shadow: 0 4px 12px rgba(22,163,74,0.3);
-}
-
-.banner-content { display: flex; align-items: center; gap: 16px; max-width: 100%; }
-.banner-icon { font-size: 1.4rem; flex-shrink: 0; animation: bellRing 0.5s ease-in-out; }
-
-@keyframes bellRing {
-  0%, 100% { transform: rotate(0deg); }
-  25%       { transform: rotate(15deg); }
-  75%       { transform: rotate(-15deg); }
-}
-
-.banner-lista { flex: 1; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
-.banner-item  { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.banner-texto { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.btn-banner-entregar {
-  background: white;
-  color: #16a34a;
-  border: none;
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-weight: 700;
-  font-size: 0.82rem;
-  cursor: pointer;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-
-.btn-banner-all {
-  background: rgba(255,255,255,0.2);
-  color: white;
-  border: 1px solid rgba(255,255,255,0.4);
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-weight: 600;
-  font-size: 0.8rem;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.banner-slide-enter-active, .banner-slide-leave-active { transition: all 0.3s ease; }
-.banner-slide-enter-from, .banner-slide-leave-to { transform: translateY(-100%); opacity: 0; }
-
-/* CONTENEDORES */
+/* Panel derecho eliminado — el centro ahora ocupa todo */
 .pos-sidebar-container { width: 260px; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 .pos-center-container  { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
-.pos-order-container   { width: 320px; border-left: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
 
-/* MAP HEADER */
+/* ── MAP HEADER ── */
 .map-header {
   height: 64px;
   border-bottom: 1px solid #e2e8f0;
@@ -939,108 +1093,8 @@ const enviarPedido = async () => {
 
 .map-area { flex: 1; overflow: hidden; background: #e2e8f0; position: relative; }
 
-/* MENU OVERLAY */
-.menu-overlay-panel {
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  height: 45%;
-  background: white;
-  border-top: 1px solid #e2e8f0;
-  box-shadow: 0 -10px 40px rgba(0,0,0,0.1);
-  border-radius: 20px 20px 0 0;
-  z-index: 50;
-  display: flex;
-  flex-direction: column;
-}
-
-.menu-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 15px 24px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.btn-close-menu {
-  background: #fee2e2;
-  color: #dc2626;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.categories-tabs {
-  display: flex;
-  gap: 10px;
-  padding: 15px 24px;
-  border-bottom: 1px solid #f1f5f9;
-  overflow-x: auto;
-}
-
-.categories-tabs button {
-  padding: 8px 16px;
-  border-radius: 20px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  color: #475569;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s;
-}
-
-.categories-tabs button.active {
-  background: #4f46e5;
-  color: white;
-  border-color: #4f46e5;
-}
-
-.products-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 15px;
-  padding: 20px 24px;
-  overflow-y: auto;
-  background: #f8fafc;
-  flex: 1;
-}
-
-.product-card {
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 15px 10px;
-  text-align: center;
-  cursor: pointer;
-  transition: 0.2s;
-}
-
-.product-card:hover { transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.05); }
-.product-media {
-  width: 100%;
-  height: 92px;
-  margin-bottom: 10px;
-  border-radius: 12px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f8fafc;
-  border: 1px solid #eef2f7;
-}
-.product-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.product-img { font-size: 2.5rem; margin-bottom: 8px; }
-.price { font-weight: 800; font-size: 1rem; margin: 0; }
-
-.carta-backdrop {
-  background: rgba(15, 23, 42, 0.72);
-}
+/* ── MODAL TOMAR NOTA ── */
+.carta-backdrop { background: rgba(15, 23, 42, 0.72); }
 
 .tomar-nota-modal {
   width: min(1180px, 94vw);
@@ -1073,19 +1127,8 @@ const enviarPedido = async () => {
   margin-bottom: 4px;
 }
 
-.tomar-nota-header h2 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 1.6rem;
-  font-weight: 900;
-}
-
-.tomar-nota-header p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 0.88rem;
-  font-weight: 600;
-}
+.tomar-nota-header h2 { margin: 0; color: #0f172a; font-size: 1.6rem; font-weight: 900; }
+.tomar-nota-header p  { margin: 4px 0 0; color: #64748b; font-size: 0.88rem; font-weight: 600; }
 
 .btn-close-carta {
   border: none;
@@ -1144,51 +1187,23 @@ const enviarPedido = async () => {
 }
 
 .carta-category-media {
-  width: 42px;
-  height: 42px;
+  width: 42px; height: 42px;
   border-radius: 12px;
   background: white;
   border: 1px solid #e2e8f0;
   overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   font-size: 1.35rem;
 }
 
-.carta-category-media img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+.carta-category-media img { width: 100%; height: 100%; object-fit: cover; }
 
-.carta-products-area {
-  min-width: 0;
-  overflow-y: auto;
-  padding: 24px;
-}
+.carta-products-area { min-width: 0; overflow-y: auto; padding: 24px; }
 
-.carta-section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-}
-
-.carta-section-title h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 1.35rem;
-  font-weight: 900;
-}
-
-.carta-section-title p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 0.86rem;
-  font-weight: 600;
-}
+.carta-section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.carta-section-title h3 { margin: 0; color: #0f172a; font-size: 1.35rem; font-weight: 900; }
+.carta-section-title p  { margin: 4px 0 0; color: #64748b; font-size: 0.86rem; font-weight: 600; }
 
 .carta-products-grid {
   display: grid;
@@ -1222,18 +1237,12 @@ const enviarPedido = async () => {
   border-radius: 14px;
   background: #f8fafc;
   border: 1px solid #eef2f7;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   overflow: hidden;
   font-size: 2.4rem;
 }
 
-.carta-product-media img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+.carta-product-media img { width: 100%; height: 100%; object-fit: cover; }
 
 .carta-product-info {
   min-width: 0;
@@ -1243,24 +1252,9 @@ const enviarPedido = async () => {
   flex: 1;
 }
 
-.carta-product-info strong {
-  color: #0f172a;
-  font-size: 0.98rem;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.carta-product-info small {
-  color: #94a3b8;
-  font-size: 0.72rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.carta-product-price {
-  font-weight: 900;
-  font-size: 1.08rem;
-}
+.carta-product-info strong { color: #0f172a; font-size: 0.98rem; line-height: 1.25; overflow-wrap: anywhere; }
+.carta-product-info small  { color: #94a3b8; font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
+.carta-product-price { font-weight: 900; font-size: 1.08rem; }
 
 .carta-empty {
   background: white;
@@ -1272,6 +1266,7 @@ const enviarPedido = async () => {
   font-weight: 700;
 }
 
+/* ── RESUMEN PEDIDO EN MODAL ── */
 .carta-order-summary {
   min-width: 0;
   background: white;
@@ -1288,26 +1283,10 @@ const enviarPedido = async () => {
   justify-content: space-between;
 }
 
-.summary-header h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 1.05rem;
-  font-weight: 900;
-}
+.summary-header h3 { margin: 0; color: #0f172a; font-size: 1.05rem; font-weight: 900; }
+.summary-header span { color: #64748b; font-weight: 800; font-size: 0.8rem; }
 
-.summary-header span {
-  color: #64748b;
-  font-weight: 800;
-  font-size: 0.8rem;
-}
-
-.summary-empty {
-  margin: auto 20px;
-  color: #94a3b8;
-  text-align: center;
-  line-height: 1.45;
-  font-weight: 600;
-}
+.summary-empty { margin: auto 20px; color: #94a3b8; text-align: center; line-height: 1.45; font-weight: 600; }
 
 .summary-items {
   flex: 1;
@@ -1321,7 +1300,7 @@ const enviarPedido = async () => {
 
 .summary-item {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 30px;
+  grid-template-columns: 32px minmax(0,1fr) 30px;
   align-items: center;
   gap: 10px;
   padding: 10px;
@@ -1335,60 +1314,20 @@ const enviarPedido = async () => {
   height: 28px;
   border-radius: 8px;
   background: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   color: #4f46e5;
   font-weight: 900;
 }
 
-.summary-item strong {
-  display: block;
-  color: #0f172a;
-  font-size: 0.88rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.summary-item strong { display: block; color: #0f172a; font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.summary-item small  { color: #64748b; font-weight: 800; }
+.summary-item button { width: 28px; height: 28px; border-radius: 50%; border: none; background: #fee2e2; color: #dc2626; cursor: pointer; font-weight: 900; }
 
-.summary-item small {
-  color: #64748b;
-  font-weight: 800;
-}
+.summary-footer { padding: 20px; border-top: 1px solid #e2e8f0; }
 
-.summary-item button {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: none;
-  background: #fee2e2;
-  color: #dc2626;
-  cursor: pointer;
-  font-weight: 900;
-}
-
-.summary-footer {
-  padding: 20px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.summary-total {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.summary-total span {
-  color: #64748b;
-  font-weight: 800;
-}
-
-.summary-total strong {
-  color: #0f172a;
-  font-size: 1.45rem;
-  font-weight: 900;
-}
+.summary-total { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.summary-total span   { color: #64748b; font-weight: 800; }
+.summary-total strong { color: #0f172a; font-size: 1.45rem; font-weight: 900; }
 
 .btn-enviar-modal {
   width: 100%;
@@ -1401,65 +1340,10 @@ const enviarPedido = async () => {
   transition: filter 0.2s, transform 0.2s;
 }
 
-.btn-enviar-modal:hover:not(:disabled) {
-  filter: brightness(0.94);
-  transform: translateY(-1px);
-}
+.btn-enviar-modal:hover:not(:disabled) { filter: brightness(0.94); transform: translateY(-1px); }
+.btn-enviar-modal:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.btn-enviar-modal:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-@media (max-width: 1100px) {
-  .tomar-nota-body {
-    grid-template-columns: 1fr;
-  }
-
-  .carta-order-summary {
-    max-height: 260px;
-    border-left: none;
-    border-top: 1px solid #e2e8f0;
-  }
-}
-
-@media (max-width: 780px) {
-  .tomar-nota-modal {
-    width: 96vw;
-    height: 92vh;
-  }
-
-  .tomar-nota-header {
-    align-items: flex-start;
-    padding: 18px;
-  }
-
-  .carta-menu-section {
-    grid-template-columns: 1fr;
-  }
-
-  .carta-category-rail {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: none;
-    border-bottom: 1px solid #e2e8f0;
-    padding: 12px;
-  }
-
-  .carta-category-btn {
-    min-width: 150px;
-  }
-
-  .carta-products-area {
-    padding: 16px;
-  }
-}
-
-.slide-up-enter-active, .slide-up-leave-active { transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); }
-.slide-up-enter-from, .slide-up-leave-to { transform: translateY(100%); }
-
-/* TICKET */
+/* ── TICKET ── */
 .modal-backdrop {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
@@ -1522,7 +1406,7 @@ const enviarPedido = async () => {
 .t-price{ font-weight: bold; flex-shrink: 0; text-align: right; }
 .ticket-empty { color: #94a3b8; font-size: 0.85rem; text-align: center; padding: 10px 0; }
 
-/* MONITOR */
+/* ── MONITOR ── */
 .monitor-modal {
   background: white;
   width: 800px;
@@ -1602,8 +1486,40 @@ const enviarPedido = async () => {
 .c-status.en-cocina { background: #fef3c7; color: #b45309; }
 .c-status.listo     { background: #dcfce7; color: #16a34a; }
 
-.c-lines { padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
-.c-lines li { font-size: 0.9rem; color: #475569; }
+.c-lines {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.c-linea {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: #475569;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.c-linea-lista {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.c-linea-check {
+  font-size: 0.8rem;
+  font-weight: 800;
+  width: 16px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.c-linea-lista .c-linea-check { color: #16a34a; }
 
 .c-actions { margin-top: 12px; }
 
@@ -1618,10 +1534,147 @@ const enviarPedido = async () => {
   transition: filter 0.2s;
 }
 
+.c-linea-entregada {
+  opacity: 0.4;
+  background: rgba(34, 197, 94, 0.08);
+  color: #15803d;
+  text-decoration: line-through;
+}
+
+.c-linea-texto { flex: 1; }
+
+.btn-servir-linea {
+  background: #16a34a;
+  color: white;
+  border: none;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-servir-linea:hover { filter: brightness(0.9); }
 .btn-entregar:hover { filter: brightness(0.9); }
+
+/* ── PANEL CAMARERO ── */
+.camarero-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.camarero-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.camarero-card {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #d97706;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.camarero-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.camarero-mesa  { display: block; font-weight: 800; color: #0f172a; font-size: 1rem; }
+.camarero-zona  { display: block; font-size: 0.72rem; color: #64748b; font-weight: 600; margin-top: 2px; }
+.camarero-hora  { font-size: 0.78rem; color: #94a3b8; font-weight: 600; }
+
+.camarero-lineas {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.camarero-linea {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.camarero-linea-servida {
+  background: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  opacity: 0.6;
+}
+
+.camarero-linea-qty    { font-weight: 800; color: #b45309; font-size: 0.88rem; flex-shrink: 0; }
+.camarero-linea-nombre { flex: 1; font-weight: 600; color: #0f172a; font-size: 0.9rem; }
+
+.btn-servir-linea-camarero {
+  background: #d97706;
+  color: white;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-servir-linea-camarero:hover { filter: brightness(0.9); }
+
+.servido-check {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+.btn-todo-servido {
+  width: 100%;
+  padding: 10px;
+  background: rgba(217, 119, 6, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(217, 119, 6, 0.3);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-todo-servido:hover { background: #d97706; color: white; }
+
+/* ── RESPONSIVE ── */
+@media (max-width: 1100px) {
+  .tomar-nota-body { grid-template-columns: 1fr; }
+  .carta-order-summary { max-height: 260px; border-left: none; border-top: 1px solid #e2e8f0; }
+}
+
+@media (max-width: 780px) {
+  .tomar-nota-modal { width: 96vw; height: 92vh; }
+  .tomar-nota-header { align-items: flex-start; padding: 18px; }
+  .carta-menu-section { grid-template-columns: 1fr; }
+  .carta-category-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none; border-bottom: 1px solid #e2e8f0; padding: 12px; }
+  .carta-category-btn { min-width: 150px; }
+  .carta-products-area { padding: 16px; }
+}
 
 @keyframes modalIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>
-

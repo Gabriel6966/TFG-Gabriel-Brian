@@ -11,9 +11,11 @@ const props = defineProps<{
   zonas?: any[]
   zonaActiva?: string
   comandasListasCount?: number
+  hayAlgoListo?: boolean
+  hayProductosCamarero?: boolean  // ← NUEVA
 }>()
 
-const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor'])
+const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor', 'abrir-panel-camarero'])
 
 const { config: negocio, iniciar, detener } = useNegocio()
 
@@ -158,21 +160,31 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
       </section>
 
       <!-- ACCIONES -->
-      <section class="sidebar-section action-section">
-        <button
-          class="btn-monitor-sidebar"
-          :style="{ background: `${colorAcento}15`, borderColor: `${colorAcento}40`, color: colorAcento }"
-          @click="emit('abrir-modal-monitor')"
-        >
-          Monitor de pedidos
-          <span v-if="comandasListasCount && comandasListasCount > 0" class="badge">
-            {{ comandasListasCount }}
-          </span>
-        </button>
-        <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
-          Finalizar servicio
-        </button>
-      </section>
+  <section class="sidebar-section action-section">
+  <button
+    class="btn-monitor-sidebar"
+    :class="{ 'monitor-alerta': hayAlgoListo }"
+    :style="{ background: `${colorAcento}15`, borderColor: `${colorAcento}40`, color: colorAcento }"
+    @click="emit('abrir-modal-monitor')"
+  >
+    📺 Monitor de pedidos
+    <span v-if="hayAlgoListo" class="badge-punto"></span>
+  </button>
+
+  <!-- NUEVO botón panel camarero -->
+  <button
+    class="btn-camarero-sidebar"
+    :class="{ 'camarero-alerta': hayProductosCamarero }"
+    @click="emit('abrir-panel-camarero')"
+  >
+    🍺 Para servir
+    <span v-if="hayProductosCamarero" class="badge-punto badge-punto-amarillo"></span>
+  </button>
+
+  <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
+    ✓ Finalizar Servicio
+  </button>
+</section>
 
     </div>
 
@@ -450,6 +462,52 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   justify-content: center;
   box-shadow: 0 2px 4px rgba(239,68,68,0.3);
   animation: pop 0.3s ease-out;
+}
+
+.badge-punto {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px white;
+}
+
+.monitor-alerta {
+  animation: pulsoAlerta 1.5s ease-in-out infinite;
+}
+
+.btn-camarero-sidebar {
+  width: 100%;
+  padding: 11px 14px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #b45309;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-camarero-sidebar:hover { filter: brightness(0.95); }
+
+.camarero-alerta {
+  animation: pulsoAlerta 1.5s ease-in-out infinite;
+}
+
+.badge-punto-amarillo {
+  background: #d97706 !important;
+}
+
+@keyframes pulsoAlerta {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50%       { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
 }
 
 @keyframes pop {

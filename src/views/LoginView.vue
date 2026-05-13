@@ -101,7 +101,7 @@ const handleResetPassword = async () => {
       <div class="brand-content">
         <div class="brand-mark">
           <img
-            src="/EasyOrderLetra-transparent.png"
+            src="/Logotipo-Easy-Order.png"
             alt="EasyOrder"
             class="wordmark-image"
           >
