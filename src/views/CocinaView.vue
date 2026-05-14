@@ -497,22 +497,27 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 }
 
 .ticket {
-  background: #1e293b;
+  background: linear-gradient(160deg, #1e293b, #172033);
   border: 1px solid #334155;
   border-left: 4px solid #f59e0b;
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: all 0.2s;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s;
 }
 
-.ticket:hover { border-color: #475569; }
+.ticket:hover {
+  border-color: #475569;
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 
 .ticket-listo {
   border-left-color: #22c55e;
-  background: #0f1f14;
+  background: linear-gradient(160deg, #0f1f14, #0a1810);
 }
 
 @keyframes flashNueva {
@@ -635,19 +640,25 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
 
 .btn-todo-listo {
   width: 100%;
-  padding: 8px;
-  background: rgba(34,197,94,0.12);
+  padding: 10px;
+  background: rgba(34, 197, 94, 0.12);
   color: #22c55e;
-  border: 1px solid rgba(34,197,94,0.25);
-  border-radius: 8px;
-  font-size: 0.82rem;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 10px;
+  font-size: 0.85rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.2s;
   margin-top: 2px;
 }
 
-.btn-todo-listo:hover { background: #22c55e; color: #0f172a; }
+.btn-todo-listo:hover {
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 10px 22px rgba(34, 197, 94, 0.3);
+  transform: translateY(-1px);
+}
 
 .empty-state {
   display: flex;

@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useNegocio } from '../../composables/useNegocio'
+import { useAuth } from '../../composables/useAuth'
 import PoweredByEasyOrder from '../branding/PoweredByEasyOrder.vue'
 
 const props = defineProps<{
@@ -12,12 +13,29 @@ const props = defineProps<{
   zonaActiva?: string
   comandasListasCount?: number
   hayAlgoListo?: boolean
-  hayProductosCamarero?: boolean  // ← NUEVA
+  hayProductosCamarero?: boolean
+  mesasReservaInminente?: Set<string>
+  reservasActivasTotalHoy?: number
 }>()
 
-const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor', 'abrir-panel-camarero'])
+const emit = defineEmits(['logout', 'abrir-modal-factura', 'cambiar-filtro', 'cambiar-zona', 'abrir-modal-monitor', 'abrir-panel-camarero', 'abrir-modal-reserva', 'abrir-lista-reservas'])
 
 const { config: negocio, iniciar, detener } = useNegocio()
+const { userName, userRole } = useAuth()
+
+const empleadoLabel = computed(() => {
+  if (userName.value) return userName.value
+  if (props.userEmail) return props.userEmail.split('@')[0]
+  return userRole.value === 'admin' ? 'Admin' : userRole.value === 'cocinero' ? 'Cocinero' : 'Camarero'
+})
+
+const empleadoRol = computed(() => {
+  switch (userRole.value) {
+    case 'admin':    return 'Administrador'
+    case 'cocinero': return 'Cocinero'
+    default:         return 'Camarero'
+  }
+})
 
 onMounted(() => {
   if (props.localId) iniciar(props.localId)
@@ -25,12 +43,22 @@ onMounted(() => {
 
 onUnmounted(() => detener())
 
-const resumen = computed(() => ({
-  disponibles: props.tables.filter(t => t.status === 'available').length,
-  ocupadas:    props.tables.filter(t => t.status === 'occupied').length,
-  preparacion: props.tables.filter(t => t.status === 'preparing').length,
-  reservadas:  0
-}))
+// Mesas con reserva inminente (< 1h) cuentan como "reservadas", no como
+// "disponibles" aunque su status sea 'available'.
+const resumen = computed(() => {
+  const reservaSet = props.mesasReservaInminente ?? new Set<string>()
+  return {
+    disponibles: props.tables.filter(t => t.status === 'available' && !reservaSet.has(t.id)).length,
+    ocupadas:    props.tables.filter(t => t.status === 'occupied').length,
+    preparacion: props.tables.filter(t => t.status === 'preparing').length,
+    reservadas:  reservaSet.size
+  }
+})
+
+const reservasRestantes = computed(() => {
+  const total = props.reservasActivasTotalHoy ?? 0
+  return Math.max(0, total - resumen.value.reservadas)
+})
 
 const secciones = computed(() => {
   if (!props.zonas) return []
@@ -76,7 +104,8 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
       <!-- Info del empleado -->
       <div class="user-details">
         <div class="info">
-          <span class="role">Camarero</span>
+          <span class="user-name">{{ empleadoLabel }}</span>
+          <span class="role">{{ empleadoRol }}</span>
         </div>
         <button class="btn-logout" @click="emit('logout')">Cerrar<br>sesion</button>
       </div>
@@ -103,6 +132,9 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
           <div class="stat-card reserved">
             <span class="number">{{ resumen.reservadas }}</span>
             <span class="label">Reservadas</span>
+            <span v-if="reservasRestantes > 0" class="stat-extra">
+              +{{ reservasRestantes }} más hoy
+            </span>
           </div>
         </div>
       </section>
@@ -180,6 +212,14 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
     <span v-if="hayProductosCamarero" class="badge-punto badge-punto-amarillo"></span>
   </button>
 
+  <button class="btn-reserva-sidebar" @click="emit('abrir-modal-reserva')">
+    📅 Nueva reserva
+  </button>
+
+  <button class="btn-reserva-sidebar btn-reserva-lista" @click="emit('abrir-lista-reservas')">
+    📋 Ver reservas
+  </button>
+
   <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
     💳 Cobrar mesa
   </button>
@@ -202,17 +242,19 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   height: 100%;
   padding: 0;
   background: white;
+  box-shadow: 1px 0 0 var(--border, #e2e8f0), var(--shadow-sm);
+  position: relative;
 }
 
 /* BRAND */
 .user-profile {
-  padding: 20px 20px 0;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 16px 20px 0;
+  border-bottom: 1px solid var(--border, #e2e8f0);
   margin-bottom: 0;
 }
 
 .brand {
-  padding-bottom: 14px;
+  padding-bottom: 16px;
   border-bottom: 2px solid var(--color-acento, #4f46e5);
   margin-bottom: 14px;
   transition: border-color 0.3s;
@@ -225,27 +267,30 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 }
 
 .brand-logo {
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
   object-fit: contain;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-md, 12px);
+  border: 1px solid var(--border, #e2e8f0);
   background: white;
   flex-shrink: 0;
+  box-shadow: var(--shadow-xs);
 }
 
 .brand-logo-placeholder {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-md, 12px);
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
   font-weight: 800;
-  font-size: 1.2rem;
+  font-size: 1.25rem;
   flex-shrink: 0;
-  transition: background 0.3s;
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 70%, #000));
+  box-shadow: var(--shadow-glow);
+  transition: background 0.3s, box-shadow 0.3s;
 }
 
 .brand-texts {
@@ -274,11 +319,23 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .info { display: flex; flex-direction: column; gap: 4px; }
 
+.user-name {
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
 .role {
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 700;
   color: #64748b;
   text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 
 .local-badge {
@@ -315,19 +372,19 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 .scrollable-content {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 12px 16px;
 }
 
 .scrollable-content::-webkit-scrollbar { width: 3px; }
 .scrollable-content::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 3px; }
 
-.sidebar-section { margin-bottom: 28px; }
+.sidebar-section { margin-bottom: 16px; }
 
 .section-title {
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 700;
   color: #0f172a;
-  margin: 0 0 10px;
+  margin: 0 0 8px;
 }
 
 /* STATS */
@@ -335,17 +392,35 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .stat-card {
   background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 10px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 12px);
+  padding: 8px 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-.stat-card .number { font-size: 1.5rem; font-weight: 800; line-height: 1; margin-bottom: 3px; }
-.stat-card .label  { font-size: 0.68rem; font-weight: 600; color: #64748b; }
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-card .number { font-size: 1.3rem; font-weight: 800; line-height: 1; margin-bottom: 2px; }
+.stat-card .label  { font-size: 0.65rem; font-weight: 600; color: #64748b; }
+.stat-card .stat-extra {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #6d28d9;
+  background: #ede9fe;
+  padding: 1px 5px;
+  border-radius: 5px;
+  line-height: 1.2;
+}
 
 .stat-card.available .number { color: #16a34a; }
 .stat-card.occupied  .number { color: #dc2626; }
@@ -416,47 +491,57 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 /* ACCIONES */
 .action-section {
-  padding-top: 16px;
+  padding-top: 10px;
   border-top: 1px dashed #e2e8f0;
 }
 
 .btn-monitor-sidebar {
   width: 100%;
-  padding: 11px 14px;
+  padding: 9px 12px;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
-  border-radius: 10px;
-  font-size: 0.9rem;
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.85rem;
   font-weight: 700;
   color: #1d4ed8;
   cursor: pointer;
-  transition: all 0.2s;
-  margin-bottom: 8px;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+  margin-bottom: 6px;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.btn-monitor-sidebar:hover { filter: brightness(0.95); }
+.btn-monitor-sidebar:hover {
+  filter: brightness(0.97);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
 
 .btn-liberar-sidebar {
   width: 100%;
-  padding: 11px 14px;
-  background: white;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #475569;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 75%, #000));
+  border: none;
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: white;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
   display: flex;
   justify-content: center;
   align-items: center;
+  gap: 6px;
+  box-shadow: var(--shadow-glow);
 }
 
-.btn-liberar-sidebar:hover { background: #f8fafc; border-color: #94a3b8; color: #0f172a; }
+.btn-liberar-sidebar:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--color-acento, #4f46e5) 38%, transparent);
+}
 
 .badge {
   background-color: #ef4444;
@@ -488,23 +573,56 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .btn-camarero-sidebar {
   width: 100%;
-  padding: 11px 14px;
+  padding: 9px 12px;
   background: #fef3c7;
   border: 1px solid #fde68a;
-  border-radius: 10px;
-  font-size: 0.9rem;
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.85rem;
   font-weight: 700;
   color: #b45309;
   cursor: pointer;
-  transition: all 0.2s;
-  margin-bottom: 8px;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+  margin-bottom: 6px;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.btn-camarero-sidebar:hover { filter: brightness(0.95); }
+.btn-camarero-sidebar:hover {
+  filter: brightness(0.97);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-reserva-sidebar {
+  width: 100%;
+  padding: 9px 12px;
+  background: #ede9fe;
+  border: 1px solid #ddd6fe;
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #6d28d9;
+  cursor: pointer;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+.btn-reserva-sidebar:hover {
+  filter: brightness(0.97);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-reserva-sidebar.btn-reserva-lista {
+  background: white;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
 
 .camarero-alerta {
   animation: pulsoAlerta 1.5s ease-in-out infinite;

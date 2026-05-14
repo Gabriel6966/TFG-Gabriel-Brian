@@ -42,10 +42,41 @@ export const CartStore = defineStore('cart', () => {
     items.value = items.value.filter(item => item.id !== productId)
   }
 
+  const increment = (productId: string) => {
+    const item = items.value.find(i => i.id === productId)
+    if (item) item.quantity++
+  }
+
+  const decrement = (productId: string) => {
+    const item = items.value.find(i => i.id === productId)
+    if (!item) return
+    if (item.quantity <= 1) {
+      removeFromCart(productId)
+    } else {
+      item.quantity--
+    }
+  }
+
+  // Setea cantidad directamente (input editable en el carrito).
+  // Cualquier valor <= 0 o no numérico elimina el ítem.
+  const setQuantity = (productId: string, qty: number) => {
+    const n = Math.floor(Number(qty))
+    if (!Number.isFinite(n) || n <= 0) {
+      removeFromCart(productId)
+      return
+    }
+    const item = items.value.find(i => i.id === productId)
+    if (item) item.quantity = Math.min(n, 999)
+  }
+
   const clear = () => {
     items.value = []
     currentTableID.value = null
   }
 
-  return { items, currentTableID, totalItems, totalPrice, addToCart, setTable, clear, removeFromCart }
+  return {
+    items, currentTableID, totalItems, totalPrice,
+    addToCart, setTable, clear, removeFromCart,
+    increment, decrement, setQuantity
+  }
 })

@@ -1,7 +1,9 @@
 ﻿<script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, onMounted } from 'vue'
 import { collection, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from '../../firebase'
+
+interface ReservaInfo { id: string; estado: string; nombre: string; hora: string; personas: number; minutos: number }
 
 const props = defineProps<{
   zona: string
@@ -10,13 +12,25 @@ const props = defineProps<{
   isEditable?: boolean
   localId?: string
   zonaId?: string
+  mesasConReservaProxima?: Set<string>
+  mesasReservaInminente?: Set<string>
+  reservasInfoPorMesa?: Map<string, ReservaInfo>
 }>()
+
+const formatoMinutos = (mins: number) => {
+  if (mins < 0) return `hace ${Math.abs(mins)} min`
+  if (mins < 60) return `en ${mins} min`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return m === 0 ? `en ${h}h` : `en ${h}h ${m}min`
+}
 
 const emit = defineEmits<{
   (e: 'select-table', table: any): void
   (e: 'update-position', id: string, x: number, y: number): void
   (e: 'cobrar-mesa', id: string): void
   (e: 'comenzar-pedido', table: any): void
+  (e: 'confirmar-reserva-y-pedido', payload: { reservaId: string; mesaId: string }): void
 }>()
 
 // ELEMENTOS DECORATIVOS
@@ -191,10 +205,36 @@ const cargarElementos = (zonaId: string) => {
   })
 }
 
+// Spread reactivo: en móvil mapeamos el rango real de X de las mesas al
+// rango [6, 94] del viewport. Usamos `matchMedia` (más fiable que
+// `innerWidth` en DevTools y al rotar pantalla).
+const isMobileView = ref(false)
+let mediaQuery: MediaQueryList | null = null
+const onMediaChange = (e: MediaQueryListEvent) => { isMobileView.value = e.matches }
+
+const xRange = ref<{ min: number; max: number }>({ min: 50, max: 50 })
+
+const spreadX = (x: number) => {
+  if (!isMobileView.value) return x
+  const { min, max } = xRange.value
+  if (max - min < 5) {
+    return Math.max(4, Math.min(96, 50 + (x - 50) * 1.7))
+  }
+  return 6 + ((x - min) / (max - min)) * 88
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    mediaQuery = window.matchMedia('(max-width: 780px)')
+    isMobileView.value = mediaQuery.matches
+    mediaQuery.addEventListener('change', onMediaChange)
+  }
+})
+
 const getElementoStyle = (el: ElementoDecorativo) => {
   const cat = CATALOGO[el.tipo as keyof typeof CATALOGO]
   return {
-    left: `${el.x}%`,
+    left: `${spreadX(el.x)}%`,
     top: `${el.y}%`,
     transform: 'translate(-50%, -50%)',
     width:  `${el.w ?? cat?.w ?? 60}px`,
@@ -203,7 +243,10 @@ const getElementoStyle = (el: ElementoDecorativo) => {
   }
 }
 
-onUnmounted(() => unsubscribeElementos?.())
+onUnmounted(() => {
+  unsubscribeElementos?.()
+  mediaQuery?.removeEventListener('change', onMediaChange)
+})
 
 // LOGICA DE DRAG
 
@@ -211,6 +254,24 @@ const mapRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
 const draggedTableId = ref<string | null>(null)
 const localPositions = ref<Record<string, { x: number, y: number }>>({})
+
+// Recalcula el rango X (min/max) cuando cambian mesas o elementos. Lo usa
+// spreadX para mapear las posiciones al ancho completo del viewport móvil.
+const recalcRange = () => {
+  const xs: number[] = []
+  for (const t of props.tables) {
+    const x = localPositions.value[t.id]?.x ?? t.x
+    if (typeof x === 'number') xs.push(x)
+  }
+  for (const el of elementos.value) {
+    if (typeof el.x === 'number') xs.push(el.x)
+  }
+  if (xs.length > 0) {
+    xRange.value = { min: Math.min(...xs), max: Math.max(...xs) }
+  }
+}
+
+watch([() => props.tables, elementos, localPositions], recalcRange, { deep: true, immediate: true })
 
 const calcularPosicionInicial = (index: number) => {
   const cols = 4
@@ -233,7 +294,7 @@ watch(() => props.tables, (newTables) => {
 const getTableStyle = (table: any) => {
   const pos = localPositions.value[table.id]
   if (!pos) return { left: '50%', top: '50%' }
-  return { left: `${pos.x}%`, top: `${pos.y}%` }
+  return { left: `${spreadX(pos.x)}%`, top: `${pos.y}%` }
 }
 
 const startDrag = (event: MouseEvent, table: any) => {
@@ -269,8 +330,8 @@ const stopDrag = () => {
 </script>
 
 <template>
-  <div class="floor-map-wrapper">
-    <div ref="mapRef" class="floor-surface">
+  <div class="floor-map-wrapper" @click="emit('select-table', null)">
+    <div ref="mapRef" class="floor-surface" @click.stop="emit('select-table', null)">
 
       <!-- Cuadricula de fondo -->
       <div class="map-grid"></div>
@@ -300,12 +361,19 @@ const stopDrag = () => {
           table.status,
           { 'selected': mesaSeleccionada === table.nr },
           { 'dragging': draggedTableId === table.id },
-          { 'editable': isEditable }
+          { 'editable': isEditable },
+          { 'has-reservation': mesasConReservaProxima?.has(table.id) }
         ]"
         :style="getTableStyle(table)"
         @mousedown.stop="startDrag($event, table)"
+        @click.stop
       >
         <div class="table-body">
+          <span
+            v-if="mesasConReservaProxima?.has(table.id)"
+            class="t-reserva-badge"
+            :title="reservasInfoPorMesa?.get(table.id) ? `${reservasInfoPorMesa.get(table.id)!.nombre} · ${reservasInfoPorMesa.get(table.id)!.hora} · ${reservasInfoPorMesa.get(table.id)!.personas} personas` : 'Reserva próxima'"
+          >📅</span>
           <span class="t-number">{{ table.nr }}</span>
           <div class="t-pax">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
@@ -323,7 +391,7 @@ const stopDrag = () => {
         <div class="chair right"></div>
 
         <transition name="fade-scale">
-          <div v-if="mesaSeleccionada === table.nr" class="floating-card" @mousedown.stop>
+          <div v-if="mesaSeleccionada === table.nr" class="floating-card" @mousedown.stop @click.stop>
             <div class="fc-header">
               <div class="fc-title-group">
                 <h4>Mesa {{ table.nr }}</h4>
@@ -333,7 +401,15 @@ const stopDrag = () => {
               </span>
             </div>
             <div class="fc-details" style="text-align: center;">
-              <p class="fc-mensaje">
+              <div v-if="reservasInfoPorMesa?.get(table.id)" class="fc-reserva-info">
+                <span class="fc-reserva-line">
+                  📅 <strong>{{ reservasInfoPorMesa.get(table.id)!.nombre }}</strong>
+                </span>
+                <span class="fc-reserva-line">
+                  {{ reservasInfoPorMesa.get(table.id)!.hora }} · {{ reservasInfoPorMesa.get(table.id)!.personas }} personas · {{ formatoMinutos(reservasInfoPorMesa.get(table.id)!.minutos) }}
+                </span>
+              </div>
+              <p v-else class="fc-mensaje">
                 Anade productos para preparar la comanda.
               </p>
               <button
@@ -344,6 +420,14 @@ const stopDrag = () => {
                 Cobrar y liberar
               </button>
               <button
+                v-if="mesasReservaInminente?.has(table.id) && reservasInfoPorMesa?.get(table.id)?.estado === 'pendiente'"
+                class="btn-atender-mesa"
+                @click.stop="emit('confirmar-reserva-y-pedido', { reservaId: reservasInfoPorMesa.get(table.id)!.id, mesaId: table.id })"
+              >
+                ✓ Atender reserva y tomar pedido
+              </button>
+              <button
+                v-else
                 class="btn-comenzar-pedido"
                 @click.stop="emit('comenzar-pedido', table)"
               >
@@ -417,30 +501,67 @@ const stopDrag = () => {
   position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 16px;
+  border-radius: 18px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   color: white;
-  box-shadow: 0 10px 20px rgba(0,0,0,0.3), inset 0 2px 5px rgba(255,255,255,0.2);
+  box-shadow:
+    0 14px 28px rgba(15, 23, 42, 0.18),
+    0 4px 8px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 6px rgba(0, 0, 0, 0.12);
   z-index: 2;
   border: 2px solid transparent;
   pointer-events: none;
 }
 
-.available .table-body  { background: #16a34a; }
-.occupied .table-body   { background: #dc2626; }
-.preparing .table-body  { background: #d97706; }
-.reserved .table-body   { background: #64748b; }
+.available .table-body  { background: linear-gradient(160deg, #22c55e, #15803d); }
+.occupied .table-body   { background: linear-gradient(160deg, #ef4444, #b91c1c); }
+.preparing .table-body  { background: linear-gradient(160deg, #f59e0b, #b45309); }
+.reserved .table-body   { background: linear-gradient(160deg, #94a3b8, #475569); }
 
 .selected .table-body {
   border-color: white;
-  box-shadow: 0 0 0 4px rgba(79,70,229,0.6), 0 15px 30px rgba(0,0,0,0.4);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-acento, #4f46e5) 65%, transparent),
+    0 18px 36px rgba(15, 23, 42, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .t-number { font-size: 1.8rem; font-weight: 800; line-height: 1; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
 .t-pax    { display: flex; align-items: center; gap: 4px; font-size: 0.8rem; margin-top: 6px; opacity: 0.9; }
+
+.t-reserva-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #a855f7, #6d28d9);
+  color: white;
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 10px rgba(109, 40, 217, 0.45), 0 0 0 2px white;
+  z-index: 3;
+  animation: reservaPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes reservaPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+.has-reservation .table-body {
+  box-shadow:
+    0 14px 28px rgba(15, 23, 42, 0.18),
+    0 0 0 2px rgba(168, 85, 247, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
 
 .chair {
   position: absolute;
@@ -469,11 +590,17 @@ const stopDrag = () => {
   left: 110%;
   top: 50%;
   transform: translateY(-50%);
-  width: 220px;
-  background: white;
-  border-radius: 12px;
+  width: 230px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 16px;
   padding: 16px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05);
+  box-shadow:
+    0 20px 50px rgba(15, 23, 42, 0.18),
+    0 4px 12px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
   cursor: default;
   z-index: 100;
 }
@@ -532,37 +659,149 @@ const stopDrag = () => {
 
 .btn-cobro-rapido {
   width: 100%;
-  background: #16a34a;
+  background: linear-gradient(135deg, #22c55e, #15803d);
   color: white;
   border: none;
-  padding: 10px;
-  border-radius: 8px;
+  padding: 11px;
+  border-radius: 10px;
   font-weight: 700;
   font-size: 0.9rem;
+  box-shadow: 0 8px 18px rgba(22, 163, 74, 0.28);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .btn-cobro-rapido:hover {
-  background: #15803d;
+  filter: brightness(1.05);
   transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(22, 163, 74, 0.38);
 }
 
 .btn-comenzar-pedido {
   width: 100%;
-  background: #0f172a;
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 70%, #000));
   color: white;
   border: none;
-  padding: 10px;
-  border-radius: 8px;
+  padding: 11px;
+  border-radius: 10px;
   font-weight: 800;
   font-size: 0.9rem;
+  box-shadow: var(--shadow-glow);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .btn-comenzar-pedido:hover {
-  background: #1e293b;
+  filter: brightness(1.05);
   transform: translateY(-1px);
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--color-acento, #4f46e5) 40%, transparent);
+}
+
+.btn-atender-mesa {
+  width: 100%;
+  background: linear-gradient(135deg, #a855f7, #6d28d9);
+  color: white;
+  border: none;
+  padding: 11px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.18s;
+  box-shadow: 0 8px 18px rgba(109, 40, 217, 0.32);
+  line-height: 1.2;
+}
+.btn-atender-mesa:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(109, 40, 217, 0.42);
+}
+
+.reserva-bloqueada {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #faf5ff, #ede9fe);
+  border: 1px dashed #c4b5fd;
+  border-radius: 10px;
+  color: #6d28d9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.reserva-bloqueada-icono {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+.reserva-bloqueada-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  text-align: left;
+  line-height: 1.25;
+}
+.reserva-bloqueada-texto strong {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #6d28d9;
+}
+.reserva-bloqueada-texto small {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #7c3aed;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.fc-reserva-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #faf5ff, #ede9fe);
+  border: 1px dashed #c4b5fd;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  text-align: left;
+}
+.fc-reserva-line {
+  font-size: 0.78rem;
+  color: #6d28d9;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.fc-reserva-line strong { font-weight: 800; }
+
+/* ── RESPONSIVE MÓVIL ──
+   En móvil:
+   1. El contenedor del plano mantiene aspect-ratio 4:3 (forma "tablet")
+      para que las posiciones porcentuales conserven la disposición que
+      diseñó el admin, en lugar de aplastarse a un vertical raro.
+   2. Mesas/sillas/badges encogen explícitamente para que entren.
+   3. Los elementos decorativos (que tienen width/height en px fijos en el
+      style inline) se reducen también con scale en CSS.
+   4. El popup flotante se ancla fijo abajo, a tamaño legible, fuera del
+      escalado del plano.
+*/
+@media (max-width: 780px) {
+  /* `zoom` reduce el plano y TODO su contenido uniformemente manteniendo
+     las proporciones exactas que tiene en escritorio. */
+  .floor-map-wrapper { overflow: hidden; }
+  .floor-surface { zoom: 0.62; }
+
+  /* Popup fuera del scaling */
+  .floating-card {
+    position: fixed;
+    left: 50% !important;
+    top: auto !important;
+    bottom: 16px !important;
+    transform: translateX(-50%) !important;
+    width: min(340px, 92vw);
+  }
+}
+
+@media (max-width: 480px) {
+  .floor-surface { zoom: 0.5; }
 }
 </style>

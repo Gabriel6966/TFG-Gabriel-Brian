@@ -753,12 +753,13 @@ const getLabelMesa  = (mesa: Mesa) => mesa.nombre ? mesa.nombre : `Mesa ${mesa.n
 /* ── PALETA ── */
 .palette {
   width: 130px;
-  background: #1e293b;
+  background: linear-gradient(180deg, #1e293b, #0f172a);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
   border-radius: 14px 0 0 14px;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
 }
 
 .palette-header { padding: 14px 12px 10px; border-bottom: 1px solid #334155; }
@@ -791,7 +792,12 @@ const getLabelMesa  = (mesa: Mesa) => mesa.nombre ? mesa.nombre : `Mesa ${mesa.n
   user-select: none;
 }
 
-.palette-item:hover { background: #475569; border-color: #4f46e5; transform: scale(1.03); }
+.palette-item:hover {
+  background: #475569;
+  border-color: var(--color-acento, #4f46e5);
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--color-acento, #4f46e5) 35%, transparent);
+}
 .palette-item:active { cursor: grabbing; }
 .palette-preview { width: 52px; height: 36px; }
 

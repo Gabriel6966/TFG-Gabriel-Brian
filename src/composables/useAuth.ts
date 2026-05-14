@@ -16,6 +16,7 @@ import router from '../router'
 
 const currentUser = ref<User | null>(null)
 const userRole = ref<'admin' | 'camarero' | 'cocinero' | null>(null)
+const userName = ref<string | null>(null)
 const localId = ref<string | null>(null)
 const authReady = ref(false)
 
@@ -40,6 +41,7 @@ export function useAuth() {
         }
 
         userRole.value = userData.rol
+        userName.value = userData.nombre ?? null
         localId.value = userData.localId
         return userRole.value
       } else {
@@ -63,6 +65,7 @@ export function useAuth() {
     await signOut(auth)
     currentUser.value = null
     userRole.value = null
+    userName.value = null
     localId.value = null
     router.replace('/')
   }
@@ -95,6 +98,7 @@ export function useAuth() {
             }
             currentUser.value = user
             userRole.value = userData.rol
+            userName.value = userData.nombre ?? null
             localId.value = userData.localId
           } else {
             await signOut(auth)
@@ -102,6 +106,7 @@ export function useAuth() {
         } else {
           currentUser.value = null
           userRole.value = null
+          userName.value = null
           localId.value = null
         }
       } catch (error) {
@@ -111,6 +116,7 @@ export function useAuth() {
         console.error('Error al sincronizar perfil de usuario:', error)
         currentUser.value = null
         userRole.value = null
+        userName.value = null
         localId.value = null
       } finally {
         authReady.value = true
@@ -118,5 +124,5 @@ export function useAuth() {
     })
   }
 
-  return { currentUser, userRole, localId, authReady, login, logout, resetPassword, initAuthListener } 
+  return { currentUser, userRole, userName, localId, authReady, login, logout, resetPassword, initAuthListener }
 }

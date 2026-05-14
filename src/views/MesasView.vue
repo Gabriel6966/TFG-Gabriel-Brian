@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
-  orderBy, doc, updateDoc, Timestamp, getDoc, writeBatch, runTransaction
+  orderBy, doc, updateDoc, Timestamp, getDoc, writeBatch, runTransaction, addDoc, getDocs
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { CartStore } from '../stores/cart'
@@ -54,12 +54,222 @@ const filtroActivo = ref('todas')
 const mostrarModalCarta = ref(false)
 const mostrarModalCamarero = ref(false)
 const hayProductosCamarero = ref(false)
+const sidebarAbiertoMovil = ref(false)
 
 // IDs de items del carrito con el campo de nota expandido
 const notasExpandidas = ref<Set<string>>(new Set())
 const toggleNota = (itemId: string) => {
   if (notasExpandidas.value.has(itemId)) notasExpandidas.value.delete(itemId)
   else notasExpandidas.value.add(itemId)
+}
+
+// ── RESERVAS (camarero) ─────────────────────────────────────────
+const reservasHoy = ref<any[]>([])
+let unsubscribeReservas: (() => void) | null = null
+
+const mostrarModalReserva = ref(false)
+const mostrarModalListaReservas = ref(false)
+const isCreandoReserva = ref(false)
+const nuevaReserva = ref({
+  nombre: '',
+  telefono: '',
+  personas: 2,
+  fecha: new Date().toISOString().split('T')[0],
+  hora: '20:00',
+  mesaId: '',
+  notas: ''
+})
+
+// Reservas activas indexadas por mesaId (pendiente/confirmada, día actual).
+const reservasActivasPorMesa = computed(() => {
+  const map = new Map<string, any[]>()
+  for (const r of reservasHoy.value) {
+    if (!r.mesaId) continue
+    if (r.estado !== 'pendiente' && r.estado !== 'confirmada') continue
+    if (!map.has(r.mesaId)) map.set(r.mesaId, [])
+    map.get(r.mesaId)!.push(r)
+  }
+  return map
+})
+
+// Mesas con reserva en las próximas 2h (badge visual en el plano).
+const VENTANA_PROXIMA_MS = 2 * 60 * 60 * 1000
+// Mesas con reserva en la próxima 1h: bloquean tomar pedido.
+const VENTANA_BLOQUEO_MS = 60 * 60 * 1000
+
+const reservaProximaDeMesa = (mesaId: string, ventanaMs: number) => {
+  const ahora = Date.now()
+  const reservas = reservasActivasPorMesa.value.get(mesaId) ?? []
+  return reservas.find(r => {
+    const ms = r.fechaHora?.seconds ? r.fechaHora.seconds * 1000 : 0
+    return ms - ahora <= ventanaMs && ms - ahora >= -30 * 60 * 1000
+  })
+}
+
+const mesasConReservaProxima = computed(() => {
+  const set = new Set<string>()
+  for (const mesaId of reservasActivasPorMesa.value.keys()) {
+    if (reservaProximaDeMesa(mesaId, VENTANA_PROXIMA_MS)) set.add(mesaId)
+  }
+  return set
+})
+
+// Mesas con reserva PENDIENTE en la próxima hora: bloquean tomar pedido
+// hasta que el camarero confirme la reserva. Si la reserva ya está confirmada
+// (el cliente llegó), la mesa se puede usar sin más.
+const mesasReservaInminente = computed(() => {
+  const set = new Set<string>()
+  const ahora = Date.now()
+  for (const [mesaId, reservasMesa] of reservasActivasPorMesa.value.entries()) {
+    const tienePendiente = reservasMesa.some(r => {
+      if (r.estado !== 'pendiente') return false
+      const ms = r.fechaHora?.seconds ? r.fechaHora.seconds * 1000 : 0
+      return ms - ahora <= VENTANA_BLOQUEO_MS && ms - ahora >= -30 * 60 * 1000
+    })
+    if (tienePendiente) set.add(mesaId)
+  }
+  return set
+})
+
+// Total de reservas pendientes/confirmadas del día, vengan o no asignadas
+// a una mesa. Lo usa el sidebar para mostrar "+N más esta noche".
+const reservasActivasTotalHoy = computed(() =>
+  reservasHoy.value.filter(r => r.estado === 'pendiente' || r.estado === 'confirmada').length
+)
+
+// Info detallada de la reserva próxima por mesa (ventana 2h) — para tooltip
+// y popup. Solo mete las activas (pendiente/confirmada).
+const reservasInfoPorMesa = computed(() => {
+  const map = new Map<string, { id: string; estado: string; nombre: string; hora: string; personas: number; minutos: number }>()
+  const ahora = Date.now()
+  for (const r of reservasHoy.value) {
+    if (!r.mesaId) continue
+    if (r.estado !== 'pendiente' && r.estado !== 'confirmada') continue
+    const ms = r.fechaHora?.seconds ? r.fechaHora.seconds * 1000 : 0
+    if (ms - ahora <= VENTANA_PROXIMA_MS && ms - ahora >= -30 * 60 * 1000) {
+      map.set(r.mesaId, {
+        id: r.id,
+        estado: r.estado,
+        nombre: r.nombre,
+        hora: new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        personas: r.personas,
+        minutos: Math.round((ms - ahora) / 60000)
+      })
+    }
+  }
+  return map
+})
+
+// Confirma una reserva y abre el flujo de tomar pedido para esa mesa.
+// Se usa tanto desde el popup de la mesa como desde la lista de reservas.
+const confirmarReservaYAbrirCarta = async (reservaId: string, mesaId: string) => {
+  if (!localId.value) return
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/reservas`, reservaId), { estado: 'confirmada' })
+  } catch {
+    toast.error('No se pudo confirmar la reserva.')
+    return
+  }
+  // Cerrar el modal de lista si está abierto.
+  mostrarModalListaReservas.value = false
+  // Seleccionar la mesa y abrir tomar nota.
+  const mesa = tables.value.find(t => t.id === mesaId)
+  if (mesa) {
+    mesaSeleccionada.value = mesa.nr
+    mesaSeleccionadaId.value = mesa.id
+    cartStore.setTable(mesa.nr)
+    // skip porque acabamos de confirmar y el snapshot puede no haber llegado.
+    abrirCartaPedido({ skipReservaCheck: true })
+  }
+}
+
+const VENTANA_RESERVA_MIN_CAM = 90
+const buscarConflictoCam = async (mesaId: string, fechaHora: Date, fechaDia: string) => {
+  if (!localId.value || !mesaId) return null
+  const snap = await getDocs(query(
+    collection(db, `locales/${localId.value}/reservas`),
+    where('fechaDia', '==', fechaDia),
+    where('mesaId', '==', mesaId),
+    where('estado', 'in', ['pendiente', 'confirmada'])
+  ))
+  const ventanaMs = VENTANA_RESERVA_MIN_CAM * 60 * 1000
+  const conflicto = snap.docs.find(d => {
+    const data = d.data()
+    if (!data.fechaHora?.toDate) return false
+    return Math.abs(data.fechaHora.toDate().getTime() - fechaHora.getTime()) < ventanaMs
+  })
+  return conflicto ? { id: conflicto.id, ...conflicto.data() } as any : null
+}
+
+const abrirModalReserva = () => {
+  nuevaReserva.value = {
+    nombre: '', telefono: '', personas: 2,
+    fecha: new Date().toISOString().split('T')[0],
+    hora: '20:00',
+    mesaId: '', notas: ''
+  }
+  mostrarModalReserva.value = true
+}
+
+// Reservas del día ordenadas, para la lista del camarero
+const reservasOrdenadasHoy = computed(() => {
+  const copia = [...reservasHoy.value]
+  copia.sort((a, b) => (a.fechaHora?.seconds ?? 0) - (b.fechaHora?.seconds ?? 0))
+  return copia
+})
+
+const cambiarEstadoReservaCamarero = async (id: string, nuevoEstado: 'confirmada' | 'cancelada' | 'cumplida') => {
+  if (!localId.value) return
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/reservas`, id), { estado: nuevoEstado })
+  } catch {
+    toast.error('No se pudo actualizar.')
+  }
+}
+
+const crearReservaCamarero = async () => {
+  if (!localId.value) return
+  const nombre = nuevaReserva.value.nombre.trim()
+  if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (nuevaReserva.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
+  if (!nuevaReserva.value.fecha || !nuevaReserva.value.hora) return toast.warning('Fecha y hora son obligatorias.')
+
+  isCreandoReserva.value = true
+  try {
+    const fechaHora = new Date(`${nuevaReserva.value.fecha}T${nuevaReserva.value.hora}`)
+
+    if (nuevaReserva.value.mesaId) {
+      const conflicto = await buscarConflictoCam(nuevaReserva.value.mesaId, fechaHora, nuevaReserva.value.fecha)
+      if (conflicto) {
+        const horaConflicto = new Date(conflicto.fechaHora.seconds * 1000)
+          .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        toast.warning(
+          'Mesa ocupada en ese tramo',
+          `Ya hay reserva de "${conflicto.nombre}" a las ${horaConflicto}. Deja ±90 min o elige otra mesa.`
+        )
+        return
+      }
+    }
+
+    await addDoc(collection(db, `locales/${localId.value}/reservas`), {
+      nombre,
+      telefono: nuevaReserva.value.telefono.trim() || '',
+      personas: Number(nuevaReserva.value.personas),
+      fechaHora: Timestamp.fromDate(fechaHora),
+      fechaDia: nuevaReserva.value.fecha,
+      mesaId: nuevaReserva.value.mesaId || '',
+      notas: nuevaReserva.value.notas.trim() || '',
+      estado: 'pendiente',
+      creadoEn: Timestamp.now()
+    })
+    toast.success('Reserva guardada')
+    mostrarModalReserva.value = false
+  } catch (e) {
+    console.error(e)
+    toast.error('No se pudo crear la reserva.')
+  } finally {
+    isCreandoReserva.value = false
+  }
 }
 
 // Modal Ticket
@@ -156,12 +366,30 @@ const comandasCamarero = computed(() =>
   )
 )
 
-const servirComandaCamarero = async (comandaId: string, _mesaId: string) => {
+// Si tras servir una comanda no quedan más pendientes en la mesa, la pasamos
+// de 'preparando' a 'ocupada' (servida, esperando cobro). Excluye del cálculo
+// la comanda recién marcada porque el snapshot del listener aún puede no haber
+// reflejado el cambio.
+const refrescarEstadoMesa = async (mesaId: string, comandaIdYaEntregada?: string) => {
+  if (!localId.value) return
+  const quedanPendientes = comandasActivas.value.some(
+    c => c.mesaId === mesaId
+      && c.id !== comandaIdYaEntregada
+      && c.estado !== 'entregado'
+      && c.estado !== 'pagado'
+  )
+  if (!quedanPendientes) {
+    await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaId), { estado: 'ocupada' })
+  }
+}
+
+const servirComandaCamarero = async (comandaId: string, mesaId: string) => {
   if (!localId.value) return
   try {
     await updateDoc(doc(db, `locales/${localId.value}/comandas`, comandaId), {
       estado: 'entregado'
     })
+    await refrescarEstadoMesa(mesaId, comandaId)
     recalcularHayAlgoListo()
   } catch (error) {
     console.error('Error al marcar como servido:', error)
@@ -171,6 +399,7 @@ const servirComandaCamarero = async (comandaId: string, _mesaId: string) => {
 const servirLineaCamarero = async (comanda: any, lineaIndex: string | number) => {
   if (!localId.value) return
   const ref = doc(db, `locales/${localId.value}/comandas`, comanda.id)
+  let pasoAEntregada = false
   try {
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(ref)
@@ -184,10 +413,14 @@ const servirLineaCamarero = async (comanda: any, lineaIndex: string | number) =>
       const lineas = (data.lineas ?? []) as any[]
       const todasEntregadas = lineas.every((_, i) => lineasEntregadas[String(i)] === true)
 
-      tx.update(ref, todasEntregadas
-        ? { estado: 'entregado', lineasEntregadas }
-        : { lineasEntregadas })
+      if (todasEntregadas) {
+        tx.update(ref, { estado: 'entregado', lineasEntregadas })
+        pasoAEntregada = true
+      } else {
+        tx.update(ref, { lineasEntregadas })
+      }
     })
+    if (pasoAEntregada) await refrescarEstadoMesa(comanda.mesaId, comanda.id)
     recalcularHayAlgoListo()
   } catch (error) {
     console.error('Error al servir línea:', error)
@@ -315,6 +548,16 @@ onMounted(() => {
     comandasActivas.value = nuevasComandas
     recalcularHayAlgoListo()
   })
+
+  // Reservas del día — para el badge en plano y la validación.
+  const hoy = new Date().toISOString().split('T')[0]
+  unsubscribeReservas = onSnapshot(
+    query(
+      collection(db, `locales/${localId.value}/reservas`),
+      where('fechaDia', '==', hoy)
+    ),
+    (snap) => { reservasHoy.value = snap.docs.map(d => ({ id: d.id, ...d.data() })) }
+  )
 })
 
 onUnmounted(() => {
@@ -323,6 +566,7 @@ onUnmounted(() => {
   unsubscribeProductos?.()
   unsubscribeCategorias?.()
   unsubscribeComandas?.()
+  unsubscribeReservas?.()
   audioContext?.close()
   detenerNegocio()
 })
@@ -428,6 +672,16 @@ const mesaActual = computed(() =>
 
 const openTable = (table: any) => {
   inicializarAudio()
+  // Click en vacío (table === null) → deseleccionar y cerrar popup.
+  if (!table) {
+    if (mesaSeleccionada.value !== null) {
+      mesaSeleccionada.value = null
+      mesaSeleccionadaId.value = null
+      mostrarModalCarta.value = false
+      cartStore.clear()
+    }
+    return
+  }
   if (mesaSeleccionada.value === table.nr) {
     mesaSeleccionada.value = null
     mesaSeleccionadaId.value = null
@@ -440,9 +694,26 @@ const openTable = (table: any) => {
   }
 }
 
-const abrirCartaPedido = () => {
+const abrirCartaPedido = (opts: { skipReservaCheck?: boolean } = {}) => {
   if (!mesaSeleccionada.value) return
-  if (!categoriaSeleccionada.value && categoriasCarta.value.length > 0) {
+  // Bloqueo: si la mesa tiene reserva PENDIENTE en la próxima hora, hay que
+  // confirmarla primero (el camarero acepta que el cliente ya está aquí).
+  // Una vez confirmada, mesasReservaInminente la deja de marcar.
+  if (!opts.skipReservaCheck && mesaSeleccionadaId.value && mesasReservaInminente.value.has(mesaSeleccionadaId.value)) {
+    const reserva = reservaProximaDeMesa(mesaSeleccionadaId.value, VENTANA_BLOQUEO_MS)
+    if (reserva && reserva.estado === 'pendiente') {
+      const horaReserva = new Date((reserva.fechaHora?.seconds ?? 0) * 1000)
+        .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      toast.warning(
+        'Reserva pendiente',
+        `${reserva.nombre} llega a las ${horaReserva}. Confírmala antes de tomar pedido.`
+      )
+      return
+    }
+  }
+  // Siempre arrancar en la primera categoría (la que está arriba según el
+  // orden de la carta), no en la última que el camarero dejó.
+  if (categoriasCarta.value.length > 0) {
     categoriaSeleccionada.value = categoriasCarta.value[0].nombre
   }
   mostrarModalCarta.value = true
@@ -467,16 +738,9 @@ const marcarComoEntregada = async (comandaId: string, mesaId: string) => {
     await updateDoc(doc(db, `locales/${localId.value}/comandas`, comandaId), {
       estado: 'entregado'
     })
-    const quedanPendientes = comandasActivas.value.some(
-      c => c.mesaId === mesaId && c.id !== comandaId &&
-      c.estado !== 'entregado' && c.estado !== 'listo'
-    )
-    if (!quedanPendientes) {
-      await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaId), { estado: 'ocupada' })
-    }
+    await refrescarEstadoMesa(mesaId, comandaId)
     // Limpiamos notificaciones de esta comanda
     comandasNotificadas.value.delete(comandaId)
-    // Limpiamos líneas notificadas de esta comanda
     for (const clave of lineasNotificadas.value) {
       if (clave.startsWith(`${comandaId}_`)) lineasNotificadas.value.delete(clave)
     }
@@ -527,6 +791,16 @@ const guardarCopiaYFinalizar = async () => {
     const comandasDeLaMesa = comandasActivas.value.filter(c => c.mesaId === mesaIdTicket.value)
     for (const c of comandasDeLaMesa) {
       batch.update(doc(db, `locales/${localId.value}/comandas`, c.id), { estado: 'pagado' })
+    }
+
+    // Marcar como "cumplida" cualquier reserva confirmada del día para esa
+    // mesa: el cliente ya consumió y cobró, no tiene sentido que siga
+    // mostrándose como "en X min" en la lista.
+    const reservasACumplir = reservasHoy.value.filter(
+      r => r.mesaId === mesaIdTicket.value && r.estado === 'confirmada'
+    )
+    for (const r of reservasACumplir) {
+      batch.update(doc(db, `locales/${localId.value}/reservas`, r.id), { estado: 'cumplida' })
     }
 
     batch.update(doc(db, `locales/${localId.value}/mesas`, mesaALiberar.id), { estado: 'libre' })
@@ -670,15 +944,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
     })
 
     if (pasoAEntregada) {
-      // Replicamos los efectos de marcarComoEntregada (liberar mesa si no quedan
-      // pendientes, limpiar notificaciones) sin reescribir 'estado' de nuevo.
-      const quedanPendientes = comandasActivas.value.some(
-        c => c.mesaId === comanda.mesaId && c.id !== comanda.id &&
-        c.estado !== 'entregado' && c.estado !== 'listo'
-      )
-      if (!quedanPendientes) {
-        await updateDoc(doc(db, `locales/${localId.value}/mesas`, comanda.mesaId), { estado: 'ocupada' })
-      }
+      await refrescarEstadoMesa(comanda.mesaId, comanda.id)
       comandasNotificadas.value.delete(comanda.id)
       for (const clave of lineasNotificadas.value) {
         if (clave.startsWith(`${comanda.id}_`)) lineasNotificadas.value.delete(clave)
@@ -695,7 +961,13 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   <div class="pos-master-layout" @click="inicializarAudio">
     <div class="pos-inner-layout">
 
-      <aside class="pos-sidebar-container">
+      <div
+        v-if="sidebarAbiertoMovil"
+        class="sidebar-backdrop-movil"
+        @click="sidebarAbiertoMovil = false"
+      ></div>
+
+      <aside class="pos-sidebar-container" :class="{ 'sidebar-abierto-movil': sidebarAbiertoMovil }">
         <PosSidebar
           :user-email="currentUser?.email ?? undefined"
           :local-id="localId ?? undefined"
@@ -706,17 +978,24 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
           :comandas-listas-count="comandasListasCount"
           :hay-algo-listo="hayAlgoListo"
           :hay-productos-camarero="hayProductosCamarero"
+          :mesas-reserva-inminente="mesasReservaInminente"
+          :reservas-activas-total-hoy="reservasActivasTotalHoy"
           @logout="logout"
-          @cambiar-filtro="(f) => filtroActivo = f"
-          @cambiar-zona="(z) => zonaActiva = z"
-          @abrir-modal-monitor="abrirMonitor"
-          @abrir-modal-factura="abrirModalFactura"
-          @abrir-panel-camarero="mostrarModalCamarero = true"
+          @cambiar-filtro="(f) => { filtroActivo = f; sidebarAbiertoMovil = false }"
+          @cambiar-zona="(z) => { zonaActiva = z; sidebarAbiertoMovil = false }"
+          @abrir-modal-monitor="() => { abrirMonitor(); sidebarAbiertoMovil = false }"
+          @abrir-modal-factura="() => { abrirModalFactura(); sidebarAbiertoMovil = false }"
+          @abrir-panel-camarero="() => { mostrarModalCamarero = true; sidebarAbiertoMovil = false }"
+          @abrir-modal-reserva="() => { abrirModalReserva(); sidebarAbiertoMovil = false }"
+          @abrir-lista-reservas="() => { mostrarModalListaReservas = true; sidebarAbiertoMovil = false }"
         />
       </aside>
 
       <main class="pos-center-container">
         <header class="map-header">
+          <button class="btn-menu-movil" @click="sidebarAbiertoMovil = true" aria-label="Abrir menú">
+            <span></span><span></span><span></span>
+          </button>
           <div class="header-spacer"></div>
           <div class="tabs-zone" v-if="zonas.length > 0">
             <button
@@ -741,10 +1020,14 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
             :mesa-seleccionada="mesaSeleccionada"
             :local-id="localId ?? undefined"
             :zona-id="zonas.find(z => z.nombre === zonaActiva)?.id ?? undefined"
+            :mesas-con-reserva-proxima="mesasConReservaProxima"
+            :mesas-reserva-inminente="mesasReservaInminente"
+            :reservas-info-por-mesa="reservasInfoPorMesa"
             @select-table="openTable"
             @update-position="actualizarPosicionMesa"
             @cobrar-mesa="abrirCobroRapido"
             @comenzar-pedido="abrirCartaPedido"
+            @confirmar-reserva-y-pedido="(p) => confirmarReservaYAbrirCarta(p.reservaId, p.mesaId)"
           />
         </div>
       </main>
@@ -830,7 +1113,18 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
               <div v-else class="summary-items">
                 <div v-for="item in cartStore.items" :key="item.id" class="summary-item-wrap">
                   <div class="summary-item">
-                    <span class="summary-qty">{{ item.quantity }}</span>
+                    <div class="qty-control">
+                      <button class="qty-btn" @click="cartStore.decrement(item.id)" :aria-label="`Quitar ${item.name}`">−</button>
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        class="qty-input"
+                        :value="item.quantity"
+                        @change="cartStore.setQuantity(item.id, Number(($event.target as HTMLInputElement).value))"
+                      >
+                      <button class="qty-btn" @click="cartStore.increment(item.id)" :aria-label="`Añadir otro ${item.name}`">+</button>
+                    </div>
                     <div class="summary-info">
                       <strong>{{ item.name }}</strong>
                       <small>{{ (item.price * item.quantity).toFixed(2) }}€</small>
@@ -843,7 +1137,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                     >
                       📝
                     </button>
-                    <button class="btn-remove" @click="cartStore.removeFromCart(item.id)">✕</button>
+                    <button class="btn-remove" @click="cartStore.removeFromCart(item.id)" title="Quitar todo">✕</button>
                   </div>
                   <div v-if="notasExpandidas.has(item.id)" class="summary-nota-row">
                     <input
@@ -1107,6 +1401,134 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
       </div>
     </transition>
 
+    <transition name="fade">
+      <div v-if="mostrarModalListaReservas" class="modal-backdrop" @click.self="mostrarModalListaReservas = false">
+        <div class="monitor-modal">
+          <div class="monitor-header">
+            <h2>📅 Reservas de hoy</h2>
+            <button class="btn-cancelar" style="padding: 8px 16px; flex: none;" @click="mostrarModalListaReservas = false">
+              Cerrar
+            </button>
+          </div>
+          <div class="lista-reservas-body">
+            <div v-if="reservasOrdenadasHoy.length === 0" class="ticket-empty" style="margin: 40px auto;">
+              No hay reservas para hoy.
+            </div>
+            <div v-else class="lista-reservas-grid">
+              <div
+                v-for="r in reservasOrdenadasHoy"
+                :key="r.id"
+                class="reserva-row-cam"
+                :class="`reserva-${r.estado}`"
+              >
+                <div class="reserva-row-hora">
+                  <span class="r-hora-num">{{ r.fechaHora?.seconds ? new Date(r.fechaHora.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--' }}</span>
+                  <span class="r-personas">👥 {{ r.personas }}</span>
+                </div>
+                <div class="reserva-row-info">
+                  <strong>{{ r.nombre }}</strong>
+                  <div class="reserva-row-meta">
+                    <span>{{ r.mesaId ? `Mesa ${tables.find(t => t.id === r.mesaId)?.nr ?? '?'}` : 'Sin mesa' }}</span>
+                    <span v-if="r.telefono">📞 {{ r.telefono }}</span>
+                  </div>
+                  <div v-if="r.notas" class="reserva-row-notas">⚠ {{ r.notas }}</div>
+                </div>
+                <span class="reserva-row-estado" :class="r.estado">
+                  {{
+                    r.estado === 'pendiente' ? 'Pendiente' :
+                    r.estado === 'confirmada' ? 'Confirmada' :
+                    r.estado === 'cumplida' ? 'Cumplida' : 'Cancelada'
+                  }}
+                </span>
+                <div class="reserva-row-actions">
+                  <button
+                    v-if="r.estado === 'pendiente' && r.mesaId"
+                    class="btn-atender-reserva"
+                    @click="confirmarReservaYAbrirCarta(r.id, r.mesaId)"
+                  >
+                    ✓ Atender
+                  </button>
+                  <button
+                    v-else-if="r.estado === 'pendiente'"
+                    class="btn-atender-reserva"
+                    @click="cambiarEstadoReservaCamarero(r.id, 'confirmada')"
+                    title="Sin mesa asignada"
+                  >
+                    ✓ Confirmar
+                  </button>
+                  <button
+                    v-if="r.estado !== 'cancelada' && r.estado !== 'cumplida'"
+                    class="r-btn cancel"
+                    @click="cambiarEstadoReservaCamarero(r.id, 'cancelada')"
+                    title="Cancelar"
+                  >✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <transition name="fade">
+      <div v-if="mostrarModalReserva" class="modal-backdrop" @click.self="mostrarModalReserva = false">
+        <div class="reserva-modal">
+          <div class="reserva-modal-header" :style="{ borderBottomColor: negocio.colorAcento || '#4f46e5' }">
+            <div>
+              <span class="reserva-modal-kicker">Nueva reserva</span>
+              <h2>Apuntar cliente</h2>
+            </div>
+            <button class="btn-close-carta" @click="mostrarModalReserva = false">Cerrar</button>
+          </div>
+          <div class="reserva-modal-body">
+            <div class="field-group">
+              <label>Cliente</label>
+              <input v-model="nuevaReserva.nombre" placeholder="Ej: María García">
+            </div>
+            <div class="field-group">
+              <label>Teléfono (opcional)</label>
+              <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+            </div>
+            <div class="reserva-modal-row">
+              <div class="field-group">
+                <label>Personas</label>
+                <input type="number" min="1" max="50" v-model.number="nuevaReserva.personas">
+              </div>
+              <div class="field-group">
+                <label>Fecha</label>
+                <input type="date" v-model="nuevaReserva.fecha">
+              </div>
+              <div class="field-group">
+                <label>Hora</label>
+                <input type="time" v-model="nuevaReserva.hora">
+              </div>
+            </div>
+            <div class="field-group">
+              <label>Mesa asignada (opcional)</label>
+              <select v-model="nuevaReserva.mesaId">
+                <option value="">Sin asignar</option>
+                <option v-for="m in tables" :key="m.id" :value="m.id">
+                  Mesa {{ m.nr }} {{ m.zona ? `(${m.zona})` : '' }}
+                </option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label>Notas (opcional)</label>
+              <input v-model="nuevaReserva.notas" placeholder="Ej: cumpleaños, alergias...">
+            </div>
+            <button
+              class="btn-enviar-modal"
+              :style="{ background: negocio.colorAcento || '#4f46e5' }"
+              :disabled="isCreandoReserva"
+              @click="crearReservaCamarero"
+            >
+              {{ isCreandoReserva ? 'Guardando...' : '📅 Guardar reserva' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>
 
@@ -1122,64 +1544,147 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   flex-direction: column;
 }
 
-.pos-inner-layout { display: flex; flex: 1; overflow: hidden; }
+.pos-inner-layout { display: flex; flex: 1; overflow: hidden; position: relative; }
 
 /* Panel derecho eliminado — el centro ahora ocupa todo */
-.pos-sidebar-container { width: 260px; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; z-index: 20; }
-.pos-center-container  { flex: 1; display: flex; flex-direction: column; background: white; position: relative; }
+.pos-sidebar-container {
+  width: 260px;
+  border-right: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  flex-shrink: 0;
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pos-center-container  { flex: 1; display: flex; flex-direction: column; background: white; position: relative; min-width: 0; }
+
+/* Botón hamburguesa — oculto por defecto, solo aparece en móvil */
+.btn-menu-movil {
+  display: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: white;
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.btn-menu-movil:hover { background: #f8fafc; }
+.btn-menu-movil span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--color-acento, #4f46e5);
+  border-radius: 2px;
+}
+
+.sidebar-backdrop-movil { display: none; }
+
+@media (max-width: 768px) {
+  .pos-sidebar-container {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: min(280px, 85vw);
+    transform: translateX(-105%);
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.3);
+    z-index: 50;
+  }
+  .pos-sidebar-container.sidebar-abierto-movil {
+    transform: translateX(0);
+  }
+  .sidebar-backdrop-movil {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 40;
+    animation: fadeIn 0.2s ease-out;
+  }
+  .btn-menu-movil { display: flex; }
+  .header-spacer { display: none; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+}
 
 /* ── MAP HEADER ── */
 .map-header {
-  height: 64px;
-  border-bottom: 1px solid #e2e8f0;
+  height: 68px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 24px;
+  padding: 0 28px;
   z-index: 10;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  box-shadow: 0 1px 0 var(--border, #e2e8f0), 0 4px 12px rgba(15, 23, 42, 0.03);
 }
 
 .tabs-zone {
   display: flex;
   background: #f1f5f9;
-  padding: 4px;
-  border-radius: 8px;
+  padding: 5px;
+  border-radius: var(--radius-md, 12px);
   gap: 4px;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .tabs-zone button {
   border: none;
   background: transparent;
-  padding: 8px 16px;
-  border-radius: 6px;
+  padding: 9px 18px;
+  border-radius: var(--radius-sm, 8px);
   font-size: 0.85rem;
   font-weight: 600;
   color: #64748b;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.18s ease;
 }
+
+.tabs-zone button:hover:not(.active) { color: #0f172a; background: rgba(255, 255, 255, 0.6); }
 
 .tabs-zone button.active {
-  background: var(--color-acento, #4f46e5);
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 75%, #000));
   color: white;
-  box-shadow: 0 2px 4px rgba(79,70,229,0.2);
+  box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 
-.map-area { flex: 1; overflow: hidden; background: #e2e8f0; position: relative; }
+.map-area {
+  flex: 1;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(79, 70, 229, 0.04), transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(124, 58, 237, 0.04), transparent 50%),
+    #eef2f7;
+  position: relative;
+}
 
 /* ── MODAL TOMAR NOTA ── */
-.carta-backdrop { background: rgba(15, 23, 42, 0.72); }
+.carta-backdrop {
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
 
 .tomar-nota-modal {
   width: min(1180px, 94vw);
   height: min(760px, 90vh);
   background: #f8fafc;
-  border-radius: 22px;
-  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.35);
+  border-radius: var(--radius-xl, 22px);
+  box-shadow:
+    0 40px 80px rgba(15, 23, 42, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: modalIn 0.25s ease-out;
+  animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .tomar-nota-header {
@@ -1189,7 +1694,8 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   gap: 18px;
   padding: 22px 26px;
   background: white;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 3px solid var(--color-acento, #4f46e5);
+  position: relative;
 }
 
 .tomar-nota-kicker {
@@ -1239,9 +1745,9 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .carta-category-btn {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border, #e2e8f0);
   background: #f8fafc;
-  border-radius: 14px;
+  border-radius: var(--radius-md, 14px);
   padding: 10px;
   display: flex;
   align-items: center;
@@ -1250,14 +1756,20 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   font-weight: 800;
   cursor: pointer;
   text-align: left;
-  transition: all 0.18s;
+  transition: transform 0.18s, box-shadow 0.18s, background 0.18s, border-color 0.18s;
 }
 
-.carta-category-btn.active,
 .carta-category-btn:hover {
   background: white;
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+  box-shadow: var(--shadow-sm);
+}
+
+.carta-category-btn.active {
+  background: white;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  border-color: color-mix(in srgb, var(--color-acento, #4f46e5) 40%, transparent);
 }
 
 .carta-category-media {
@@ -1286,9 +1798,9 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .carta-product-card {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border, #e2e8f0);
   background: white;
-  border-radius: 16px;
+  border-radius: var(--radius-lg, 16px);
   padding: 12px;
   min-height: 216px;
   display: flex;
@@ -1296,14 +1808,14 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   gap: 10px;
   cursor: pointer;
   text-align: left;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
-  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.18s;
 }
 
 .carta-product-card:hover {
-  transform: translateY(-3px);
-  border-color: #cbd5e1;
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+  transform: translateY(-4px);
+  border-color: color-mix(in srgb, var(--color-acento, #4f46e5) 35%, transparent);
+  box-shadow: var(--shadow-lg);
 }
 
 .carta-product-media {
@@ -1343,6 +1855,8 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 /* ── RESUMEN PEDIDO EN MODAL ── */
 .carta-order-summary {
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: white;
   border-left: 1px solid #e2e8f0;
   display: flex;
@@ -1384,20 +1898,49 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 
 .summary-item {
   display: grid;
-  grid-template-columns: 32px minmax(0,1fr) 30px 30px;
+  grid-template-columns: 92px minmax(0,1fr) 30px 30px;
   align-items: center;
   gap: 8px;
 }
 
-.summary-qty {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+.qty-control {
+  display: flex;
+  align-items: center;
   background: white;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--color-acento, #4f46e5);
-  font-weight: 900;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: var(--shadow-xs);
 }
+.qty-btn {
+  width: 26px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--color-acento, #4f46e5);
+  font-size: 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.qty-btn:hover { background: #f1f5f9; }
+.qty-input {
+  width: 36px;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: #0f172a;
+  outline: none;
+  padding: 0;
+  font-family: inherit;
+  -moz-appearance: textfield;
+}
+.qty-input::-webkit-outer-spin-button,
+.qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 .summary-info { min-width: 0; }
 .summary-item strong { display: block; color: #0f172a; font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1458,23 +2001,31 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .btn-enviar-modal {
   width: 100%;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-md, 12px);
   color: white;
-  padding: 14px;
-  font-weight: 900;
+  padding: 15px;
+  font-weight: 800;
+  font-size: 0.95rem;
+  letter-spacing: 0.2px;
   cursor: pointer;
-  transition: filter 0.2s, transform 0.2s;
+  transition: filter 0.2s, transform 0.2s, box-shadow 0.2s;
+  box-shadow: var(--shadow-glow);
 }
 
-.btn-enviar-modal:hover:not(:disabled) { filter: brightness(0.94); transform: translateY(-1px); }
+.btn-enviar-modal:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--color-acento, #4f46e5) 40%, transparent);
+}
 .btn-enviar-modal:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── TICKET ── */
 .modal-backdrop {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15,23,42,0.6);
-  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -1488,7 +2039,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   border-radius: 4px;
   font-family: 'Courier New', monospace;
   position: relative;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  box-shadow: 0 30px 60px rgba(15, 23, 42, 0.28), 0 8px 20px rgba(15, 23, 42, 0.12);
 }
 
 .ticket-paper::after {
@@ -1521,9 +2072,25 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .modal-actions { display: flex; gap: 10px; width: 340px; margin-top: 20px; }
-.btn-cancelar, .btn-cobrar { flex: 1; padding: 14px; border: none; border-radius: 12px; font-weight: 600; cursor: pointer; font-size: 0.95rem; }
+.btn-cancelar, .btn-cobrar {
+  flex: 1; padding: 14px; border: none;
+  border-radius: var(--radius-md, 12px);
+  font-weight: 700; cursor: pointer; font-size: 0.95rem;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+}
 .btn-cancelar { background: #f1f5f9; color: #64748b; }
-.btn-cobrar   { background: #16a34a; color: white; transition: background 0.3s; }
+.btn-cancelar:hover { background: #e2e8f0; color: #334155; }
+.btn-cobrar {
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: white;
+  box-shadow: 0 10px 22px rgba(22, 163, 74, 0.32);
+}
+.btn-cobrar:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(22, 163, 74, 0.4);
+}
+.btn-cobrar:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .ticket-items { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .t-item { display: flex; justify-content: space-between; align-items: flex-start; font-size: 0.95rem; }
@@ -1538,11 +2105,12 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   width: 800px;
   max-width: 95vw;
   height: 600px;
-  border-radius: 16px;
+  border-radius: var(--radius-xl, 20px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: modalIn 0.3s ease-out;
+  box-shadow: 0 40px 80px rgba(15, 23, 42, 0.35);
+  animation: modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .monitor-header {
@@ -1569,15 +2137,23 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   width: 100%;
   padding: 14px;
   margin-bottom: 8px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: var(--radius-md, 10px);
   background: white;
   cursor: pointer;
   text-align: left;
-  transition: all 0.2s;
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s, background 0.18s;
 }
 
-.monitor-table-btn.tiene-listos { border-color: #16a34a; background: #f0fdf4; color: #15803d; }
+.monitor-table-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+
+.monitor-table-btn.tiene-listos {
+  border-color: #22c55e;
+  background: linear-gradient(160deg, #f0fdf4, #dcfce7);
+  color: #15803d;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.15);
+}
 
 .badge-listo {
   background: #16a34a;
@@ -1591,14 +2167,21 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .monitor-content { flex: 1; padding: 24px; overflow-y: auto; }
 
 .comanda-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 14px);
   padding: 16px;
   margin-bottom: 16px;
-  background: #f8fafc;
+  background: white;
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow 0.18s;
 }
+.comanda-card:hover { box-shadow: var(--shadow-sm); }
 
-.comanda-lista { border-color: #16a34a; background: #f0fdf4; }
+.comanda-lista {
+  border-color: #22c55e;
+  background: linear-gradient(160deg, #f0fdf4, #dcfce7);
+  box-shadow: 0 8px 22px rgba(22, 163, 74, 0.12);
+}
 
 .c-header {
   display: flex;
@@ -1653,14 +2236,15 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .c-actions { margin-top: 12px; }
 
 .btn-entregar {
-  background: #16a34a;
+  background: linear-gradient(135deg, #22c55e, #15803d);
   color: white;
   border: none;
-  padding: 8px 16px;
-  border-radius: 8px;
+  padding: 9px 18px;
+  border-radius: var(--radius-sm, 10px);
   font-weight: 700;
   cursor: pointer;
-  transition: filter 0.2s;
+  transition: filter 0.2s, transform 0.18s, box-shadow 0.18s;
+  box-shadow: 0 6px 14px rgba(22, 163, 74, 0.28);
 }
 
 .c-linea-entregada {
@@ -1685,8 +2269,12 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   flex-shrink: 0;
 }
 
-.btn-servir-linea:hover { filter: brightness(0.9); }
-.btn-entregar:hover { filter: brightness(0.9); }
+.btn-servir-linea:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn-entregar:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(22, 163, 74, 0.4);
+}
 
 /* ── PANEL CAMARERO ── */
 .camarero-panel-body {
@@ -1703,14 +2291,17 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 
 .camarero-card {
   background: white;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border, #e2e8f0);
   border-left: 4px solid #d97706;
-  border-radius: 12px;
+  border-radius: var(--radius-md, 14px);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.18s, box-shadow 0.18s;
 }
+.camarero-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 
 .camarero-card-header {
   display: flex;
@@ -1752,19 +2343,24 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .camarero-linea-nombre { flex: 1; font-weight: 600; color: #0f172a; font-size: 0.9rem; }
 
 .btn-servir-linea-camarero {
-  background: #d97706;
+  background: linear-gradient(135deg, #f59e0b, #b45309);
   color: white;
   border: none;
-  padding: 4px 12px;
-  border-radius: 6px;
+  padding: 5px 14px;
+  border-radius: 8px;
   font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
-  transition: filter 0.2s;
+  transition: filter 0.2s, transform 0.18s, box-shadow 0.18s;
   flex-shrink: 0;
+  box-shadow: 0 4px 10px rgba(217, 119, 6, 0.28);
 }
 
-.btn-servir-linea-camarero:hover { filter: brightness(0.9); }
+.btn-servir-linea-camarero:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(217, 119, 6, 0.4);
+}
 
 .servido-check {
   font-size: 0.72rem;
@@ -1795,12 +2391,194 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 @media (max-width: 780px) {
-  .tomar-nota-modal { width: 96vw; height: 92vh; }
-  .tomar-nota-header { align-items: flex-start; padding: 18px; }
+  /* Tomar nota → fullscreen */
+  .tomar-nota-modal { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+  .tomar-nota-header { align-items: flex-start; padding: 14px 16px; }
+  .tomar-nota-header h2 { font-size: 1.2rem; }
   .carta-menu-section { grid-template-columns: 1fr; }
-  .carta-category-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none; border-bottom: 1px solid #e2e8f0; padding: 12px; }
-  .carta-category-btn { min-width: 150px; }
-  .carta-products-area { padding: 16px; }
+  .carta-category-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none; border-bottom: 1px solid #e2e8f0; padding: 12px; max-height: none; }
+  .carta-category-btn { min-width: 140px; flex-shrink: 0; }
+  .carta-products-area { padding: 14px; }
+  .carta-products-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .carta-product-card { min-height: 180px; }
+  .carta-order-summary { max-height: 220px; }
+
+  /* Resto de modales → fullscreen también */
+  .modal-backdrop { padding: 0; }
+  .monitor-modal,
+  .reserva-modal {
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    max-width: 100vw;
+    border-radius: 0;
+  }
+  .ticket-paper { width: 92vw; max-width: 360px; }
+  .modal-actions { width: 92vw; max-width: 360px; }
+
+  /* Monitor en móvil: sidebar arriba en lugar de izquierda */
+  .monitor-body { flex-direction: column; }
+  .monitor-sidebar { width: 100%; max-height: 140px; border-right: none; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; }
+  .monitor-sidebar > h3 { display: none; }
+  .monitor-table-btn { min-width: 140px; flex-shrink: 0; margin-bottom: 0; }
+
+  /* Header del mapa: tabs en scroll horizontal si no caben */
+  .map-header { padding: 0 14px; gap: 12px; }
+  .tabs-zone { overflow-x: auto; flex-shrink: 1; min-width: 0; }
+  .tabs-zone button { padding: 8px 14px; font-size: 0.8rem; flex-shrink: 0; }
+
+  /* Modal nueva reserva: fila de 3 inputs apilada */
+  .reserva-modal-row { grid-template-columns: 1fr 1fr; }
+  .reserva-modal-row .field-group:first-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 480px) {
+  .carta-products-grid { grid-template-columns: 1fr; }
+  .summary-item { grid-template-columns: 84px minmax(0,1fr) 28px 28px; gap: 6px; }
+  .qty-control { box-shadow: none; }
+  .qty-btn { width: 24px; height: 26px; }
+  .qty-input { width: 30px; font-size: 0.88rem; }
+}
+
+/* ── MODAL LISTA DE RESERVAS (camarero) ── */
+.lista-reservas-body { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.lista-reservas-grid { display: flex; flex-direction: column; gap: 10px; }
+
+.reserva-row-cam {
+  display: grid;
+  grid-template-columns: 80px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #94a3b8;
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+}
+.reserva-row-cam.reserva-pendiente  { border-left-color: #d97706; }
+.reserva-row-cam.reserva-confirmada { border-left-color: #16a34a; background: linear-gradient(160deg, #f0fdf4, white); }
+.reserva-row-cam.reserva-cumplida   { border-left-color: #4338ca; opacity: 0.7; }
+.reserva-row-cam.reserva-cancelada  { border-left-color: #dc2626; opacity: 0.5; }
+
+.reserva-row-hora {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 10px; background: #f8fafc; border-radius: 10px;
+}
+.r-hora-num { font-size: 1.1rem; font-weight: 800; color: #0f172a; line-height: 1; font-variant-numeric: tabular-nums; }
+.r-personas { font-size: 0.68rem; font-weight: 700; color: #64748b; }
+
+.reserva-row-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.reserva-row-info strong { font-size: 0.95rem; font-weight: 800; color: #0f172a; }
+.reserva-row-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 0.76rem; color: #64748b; font-weight: 600; }
+.reserva-row-notas {
+  font-size: 0.74rem; font-weight: 600; color: #b45309;
+  background: #fef3c7; border-left: 3px solid #d97706;
+  padding: 3px 7px; border-radius: 6px; margin-top: 2px;
+}
+
+.reserva-row-estado { font-size: 0.7rem; font-weight: 800; padding: 4px 10px; border-radius: 20px; letter-spacing: 0.3px; }
+.reserva-row-estado.pendiente  { background: #fef3c7; color: #b45309; }
+.reserva-row-estado.confirmada { background: #dcfce7; color: #16a34a; }
+.reserva-row-estado.cumplida   { background: #e0e7ff; color: #4338ca; }
+.reserva-row-estado.cancelada  { background: #fee2e2; color: #dc2626; }
+
+.reserva-row-actions { display: flex; gap: 6px; }
+.reserva-row-actions .r-btn {
+  width: 30px; height: 30px; border-radius: 8px;
+  border: 1px solid #e2e8f0; background: white; cursor: pointer;
+  font-size: 0.85rem; transition: transform 0.15s, filter 0.18s;
+}
+.reserva-row-actions .r-btn:hover { transform: translateY(-1px); filter: brightness(1.05); }
+.reserva-row-actions .r-btn.confirm  { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
+.reserva-row-actions .r-btn.cumplida { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.reserva-row-actions .r-btn.cancel   { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+
+.btn-atender-reserva {
+  padding: 7px 14px;
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.18s, filter 0.18s;
+  box-shadow: 0 4px 10px rgba(22, 163, 74, 0.28);
+  white-space: nowrap;
+}
+.btn-atender-reserva:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 8px 18px rgba(22, 163, 74, 0.38);
+}
+.btn-atender-reserva.btn-cumplida {
+  background: linear-gradient(135deg, #6366f1, #4338ca);
+  box-shadow: 0 4px 10px rgba(67, 56, 202, 0.3);
+}
+.btn-atender-reserva.btn-cumplida:hover {
+  box-shadow: 0 8px 18px rgba(67, 56, 202, 0.4);
+}
+
+/* ── MODAL NUEVA RESERVA (camarero) ── */
+.reserva-modal {
+  width: min(560px, 94vw);
+  background: white;
+  border-radius: var(--radius-xl, 22px);
+  box-shadow: 0 40px 80px rgba(15, 23, 42, 0.35);
+  overflow: hidden;
+  animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+.reserva-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 22px 26px;
+  border-bottom: 3px solid #4f46e5;
+}
+.reserva-modal-kicker {
+  display: block;
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.reserva-modal-header h2 { margin: 0; color: #0f172a; font-size: 1.4rem; font-weight: 900; }
+.reserva-modal-body {
+  padding: 22px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+.reserva-modal-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 1fr;
+  gap: 12px;
+}
+.reserva-modal-row .field-group { min-width: 0; }
+.reserva-modal-body .field-group { display: flex; flex-direction: column; gap: 6px; }
+.reserva-modal-body .field-group label { font-size: 0.78rem; font-weight: 700; color: #475569; }
+.reserva-modal-body .field-group input,
+.reserva-modal-body .field-group select {
+  padding: 11px 14px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.95rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  width: 100%;
+  box-sizing: border-box;
+}
+.reserva-modal-body .field-group input:focus,
+.reserva-modal-body .field-group select:focus {
+  border-color: var(--color-acento, #4f46e5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-acento, #4f46e5) 18%, transparent);
 }
 
 @keyframes modalIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

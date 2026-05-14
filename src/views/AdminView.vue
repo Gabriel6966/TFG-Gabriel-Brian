@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import {
   collection, addDoc, onSnapshot,
-  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc, writeBatch
+  query, orderBy, where, deleteDoc, doc, updateDoc, setDoc, writeBatch, Timestamp, getDocs
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
@@ -86,6 +86,19 @@ interface Factura {
   items: any[]
 }
 
+interface Reserva {
+  id: string
+  nombre: string
+  telefono?: string
+  personas: number
+  fechaHora: any
+  fechaDia: string
+  mesaId?: string
+  notas?: string
+  estado: 'pendiente' | 'confirmada' | 'cancelada' | 'cumplida'
+  creadoEn: any
+}
+
 // ── AUTH & NEGOCIO ────────────────────────────────────────────────
 
 const { logout, localId } = useAuth()
@@ -101,9 +114,11 @@ const zonas = ref<Zona[]>([])
 const invitaciones = ref<Invitacion[]>([])
 const empleados = ref<Empleado[]>([])
 const facturas = ref<Factura[]>([])
+const reservas = ref<Reserva[]>([])
 const cantidadMesas = ref(10)
 const isLoading = ref(false)
 const isCreandoInvitacion = ref(false)
+const isCreandoReserva = ref(false)
 
 // ── FILTROS ───────────────────────────────────────────────────────
 
@@ -113,6 +128,31 @@ const filtroFecha = ref(new Date().toISOString().split('T')[0])
 const finanzasSubTab = ref('tickets')
 const filtroFEmpleado = ref('todos')
 const filtroFPago = ref('todos')
+const filtroFechaReservas = ref(new Date().toISOString().split('T')[0])
+const filtroEstadoReserva = ref<'todas' | 'pendiente' | 'confirmada' | 'cancelada' | 'cumplida'>('todas')
+
+const nuevaReserva = ref({
+  nombre: '',
+  telefono: '',
+  personas: 2,
+  fecha: new Date().toISOString().split('T')[0],
+  hora: '20:00',
+  mesaId: '',
+  notas: ''
+})
+
+const mostrarModalEditarReserva = ref(false)
+const reservaEditandoId = ref<string | null>(null)
+const reservaEditando = ref({
+  nombre: '',
+  telefono: '',
+  personas: 2,
+  fecha: '',
+  hora: '',
+  mesaId: '',
+  notas: ''
+})
+const isGuardandoEdicionReserva = ref(false)
 
 // ── MODALES ───────────────────────────────────────────────────────
 
@@ -178,6 +218,7 @@ let unsubscribeZonas: (() => void) | null = null
 let unsubscribeInvitaciones: (() => void) | null = null
 let unsubscribeEmpleados: (() => void) | null = null
 let unsubscribeFacturas: (() => void) | null = null
+let unsubscribeReservas: (() => void) | null = null
 
 // ── COMPUTED: FINANZAS ────────────────────────────────────────────
 
@@ -310,6 +351,23 @@ const cargarFacturas = (fecha: string) => {
 
 watch(filtroFecha, (newFecha) => cargarFacturas(newFecha))
 
+const cargarReservas = (fecha: string) => {
+  if (!localId.value) return
+  if (unsubscribeReservas) unsubscribeReservas()
+  // Sin orderBy server-side: evita exigir índice compuesto (where+orderBy).
+  // Ordenamos cliente-side por fechaHora ascendente.
+  const qReservas = query(
+    collection(db, `locales/${localId.value}/reservas`),
+    where('fechaDia', '==', fecha)
+  )
+  unsubscribeReservas = onSnapshot(qReservas, (snapshot) => {
+    const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Reserva[]
+    docs.sort((a, b) => (a.fechaHora?.seconds ?? 0) - (b.fechaHora?.seconds ?? 0))
+    reservas.value = docs
+  })
+}
+watch(filtroFechaReservas, (val) => cargarReservas(val))
+
 watch(configNegocio, (val) => {
   configEditando.value = { ...val }
 }, { immediate: true, deep: true })
@@ -319,6 +377,7 @@ onMounted(() => {
 
   iniciarNegocio(localId.value)
   cargarFacturas(filtroFecha.value)
+  cargarReservas(filtroFechaReservas.value)
 
   unsubscribeMesas = onSnapshot(
     query(collection(db, `locales/${localId.value}/mesas`), orderBy('numero')),
@@ -371,6 +430,7 @@ onUnmounted(() => {
   unsubscribeInvitaciones?.()
   unsubscribeEmpleados?.()
   unsubscribeFacturas?.()
+  unsubscribeReservas?.()
 })
 
 // ── ACCIONES: LOGOUT ──────────────────────────────────────────────
@@ -867,6 +927,198 @@ const onSelectEmojiCategoria = (e: any) => { nuevaCategoria.value.icono = e.i; m
 const onSelectEmojiProducto  = (e: any) => { nuevoProducto.value.icon  = e.i; mostrarSelectorProducto.value  = false }
 const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; mostrarSelectorZona.value      = false }
 
+// ── RESERVAS ──────────────────────────────────────────────────────
+
+const reservasFiltradas = computed(() => {
+  if (filtroEstadoReserva.value === 'todas') return reservas.value
+  return reservas.value.filter(r => r.estado === filtroEstadoReserva.value)
+})
+
+const horaReserva = (r: Reserva) => {
+  if (!r.fechaHora?.seconds) return '--:--'
+  return new Date(r.fechaHora.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+// Reserva "vencida": ya pasó la hora prevista y nadie la marcó cumplida/cancelada.
+const esReservaVencida = (r: Reserva) => {
+  if (r.estado !== 'pendiente' && r.estado !== 'confirmada') return false
+  if (!r.fechaHora?.seconds) return false
+  return r.fechaHora.seconds * 1000 < Date.now()
+}
+
+const nombreMesa = (mesaId?: string) => {
+  if (!mesaId) return 'Sin asignar'
+  const m = mesas.value.find(x => x.id === mesaId)
+  return m ? `Mesa ${m.numero}` : 'Sin asignar'
+}
+
+// Comprueba si una mesa ya tiene reserva activa solapada en ±90 min.
+// Devuelve la reserva en conflicto si existe, o null si no.
+const VENTANA_RESERVA_MIN = 90
+const buscarConflictoReserva = async (
+  mesaId: string,
+  fechaHora: Date,
+  fechaDia: string,
+  excluirReservaId?: string
+) => {
+  if (!localId.value || !mesaId) return null
+  const snap = await getDocs(query(
+    collection(db, `locales/${localId.value}/reservas`),
+    where('fechaDia', '==', fechaDia),
+    where('mesaId', '==', mesaId),
+    where('estado', 'in', ['pendiente', 'confirmada'])
+  ))
+  const ventanaMs = VENTANA_RESERVA_MIN * 60 * 1000
+  const conflicto = snap.docs.find(d => {
+    if (excluirReservaId && d.id === excluirReservaId) return false
+    const data = d.data()
+    if (!data.fechaHora?.toDate) return false
+    const diff = Math.abs(data.fechaHora.toDate().getTime() - fechaHora.getTime())
+    return diff < ventanaMs
+  })
+  return conflicto ? { id: conflicto.id, ...conflicto.data() } as any : null
+}
+
+const crearReserva = async () => {
+  if (!localId.value) return
+  const nombre = nuevaReserva.value.nombre.trim()
+  if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (nuevaReserva.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
+  if (!nuevaReserva.value.fecha || !nuevaReserva.value.hora) return toast.warning('Fecha y hora son obligatorias.')
+
+  isCreandoReserva.value = true
+  try {
+    const fechaHora = new Date(`${nuevaReserva.value.fecha}T${nuevaReserva.value.hora}`)
+
+    if (nuevaReserva.value.mesaId) {
+      const conflicto = await buscarConflictoReserva(
+        nuevaReserva.value.mesaId,
+        fechaHora,
+        nuevaReserva.value.fecha
+      )
+      if (conflicto) {
+        const horaConflicto = new Date(conflicto.fechaHora.seconds * 1000)
+          .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        toast.warning(
+          'Mesa ocupada en ese tramo',
+          `Ya hay una reserva de "${conflicto.nombre}" a las ${horaConflicto}. Mantén ±${VENTANA_RESERVA_MIN} min de margen o elige otra mesa.`
+        )
+        return
+      }
+    }
+
+    await addDoc(collection(db, `locales/${localId.value}/reservas`), {
+      nombre,
+      telefono: nuevaReserva.value.telefono.trim() || '',
+      personas: Number(nuevaReserva.value.personas),
+      fechaHora: Timestamp.fromDate(fechaHora),
+      fechaDia: nuevaReserva.value.fecha,
+      mesaId: nuevaReserva.value.mesaId || '',
+      notas: nuevaReserva.value.notas.trim() || '',
+      estado: 'pendiente',
+      creadoEn: Timestamp.now()
+    })
+    nuevaReserva.value = {
+      nombre: '', telefono: '', personas: 2,
+      fecha: nuevaReserva.value.fecha, hora: '20:00',
+      mesaId: '', notas: ''
+    }
+    toast.success('Reserva creada')
+  } catch (e) {
+    console.error(e)
+    toast.error('No se pudo crear la reserva.')
+  } finally {
+    isCreandoReserva.value = false
+  }
+}
+
+const cambiarEstadoReserva = async (id: string, nuevoEstado: Reserva['estado']) => {
+  if (!localId.value) return
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/reservas`, id), { estado: nuevoEstado })
+  } catch {
+    toast.error('No se pudo actualizar la reserva.')
+  }
+}
+
+const abrirEditarReserva = (r: Reserva) => {
+  reservaEditandoId.value = r.id
+  const fechaHora = r.fechaHora?.toDate ? r.fechaHora.toDate() : new Date(r.fechaHora.seconds * 1000)
+  reservaEditando.value = {
+    nombre: r.nombre,
+    telefono: r.telefono ?? '',
+    personas: r.personas,
+    fecha: r.fechaDia,
+    hora: fechaHora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+    mesaId: r.mesaId ?? '',
+    notas: r.notas ?? ''
+  }
+  mostrarModalEditarReserva.value = true
+}
+
+const guardarEdicionReserva = async () => {
+  if (!localId.value || !reservaEditandoId.value) return
+  const nombre = reservaEditando.value.nombre.trim()
+  if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (reservaEditando.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
+  if (!reservaEditando.value.fecha || !reservaEditando.value.hora) return toast.warning('Fecha y hora son obligatorias.')
+
+  isGuardandoEdicionReserva.value = true
+  try {
+    const fechaHora = new Date(`${reservaEditando.value.fecha}T${reservaEditando.value.hora}`)
+
+    if (reservaEditando.value.mesaId) {
+      const conflicto = await buscarConflictoReserva(
+        reservaEditando.value.mesaId,
+        fechaHora,
+        reservaEditando.value.fecha,
+        reservaEditandoId.value
+      )
+      if (conflicto) {
+        const horaConflicto = new Date(conflicto.fechaHora.seconds * 1000)
+          .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        toast.warning(
+          'Mesa ocupada en ese tramo',
+          `Ya hay reserva de "${conflicto.nombre}" a las ${horaConflicto}.`
+        )
+        return
+      }
+    }
+
+    await updateDoc(doc(db, `locales/${localId.value}/reservas`, reservaEditandoId.value), {
+      nombre,
+      telefono: reservaEditando.value.telefono.trim() || '',
+      personas: Number(reservaEditando.value.personas),
+      fechaHora: Timestamp.fromDate(fechaHora),
+      fechaDia: reservaEditando.value.fecha,
+      mesaId: reservaEditando.value.mesaId || '',
+      notas: reservaEditando.value.notas.trim() || ''
+    })
+    mostrarModalEditarReserva.value = false
+    toast.success('Reserva actualizada')
+  } catch {
+    toast.error('No se pudo guardar.')
+  } finally {
+    isGuardandoEdicionReserva.value = false
+  }
+}
+
+const eliminarReserva = async (id: string) => {
+  if (!localId.value) return
+  const ok = await confirmDialog({
+    title: 'Eliminar reserva',
+    message: 'Esta acción no se puede deshacer.',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
+  try {
+    await deleteDoc(doc(db, `locales/${localId.value}/reservas`, id))
+  } catch {
+    toast.error('No se pudo eliminar.')
+  }
+}
+
 // ── EXPORTAR EXCEL ────────────────────────────────────────────────
 
 const exportandoExcel = ref(false)
@@ -1090,6 +1342,7 @@ const exportarFacturasExcel = async () => {
       <nav class="sidebar-nav">
         <button :class="{ active: currentTab === 'finanzas' }"  @click="currentTab = 'finanzas'">💰 Finanzas</button>
         <button :class="{ active: currentTab === 'mesas' }"     @click="currentTab = 'mesas'">🪑 Sala</button>
+        <button :class="{ active: currentTab === 'reservas' }"  @click="currentTab = 'reservas'">📅 Reservas</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
         <button :class="{ active: currentTab === 'usuarios' }"  @click="currentTab = 'usuarios'">👥 Empleados</button>
         <button :class="{ active: currentTab === 'negocio' }"   @click="currentTab = 'negocio'">🏢 Mi Negocio</button>
@@ -1460,17 +1713,128 @@ const exportarFacturasExcel = async () => {
               No hay empleados con este filtro.
             </div>
 
-            <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
-              <div class="empleado-avatar">{{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}</div>
-              <div class="item-info">
-                <span class="item-name">{{ emp.nombre }}</span>
-                <span class="item-sub">{{ emp.email }}</span>
+            <div v-else class="empleados-list">
+              <div v-for="emp in empleadosFiltrados" :key="emp.id" class="empleado-row">
+                <div class="empleado-avatar">{{ emp.nombre?.charAt(0).toUpperCase() ?? '?' }}</div>
+                <div class="item-info">
+                  <span class="item-name">{{ emp.nombre }}</span>
+                  <span class="item-sub">{{ emp.email }}</span>
+                </div>
+                <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
+                <button class="activo-toggle" :class="emp.activo ? 'activo' : 'inactivo'" @click="toggleEstadoEmpleado(emp.id, emp.activo)">
+                  {{ emp.activo ? '● Activo' : '○ Inactivo' }}
+                </button>
+                <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
               </div>
-              <span class="rol-badge" :class="emp.rol">{{ emp.rol }}</span>
-              <button class="activo-toggle" :class="emp.activo ? 'activo' : 'inactivo'" @click="toggleEstadoEmpleado(emp.id, emp.activo)">
-                {{ emp.activo ? '● Activo' : '○ Inactivo' }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ TAB: RESERVAS ══ -->
+      <div v-if="currentTab === 'reservas'">
+        <div class="page-header">
+          <div>
+            <h1>Reservas</h1>
+            <p class="page-subtitle">{{ reservasFiltradas.length }} reserva{{ reservasFiltradas.length !== 1 ? 's' : '' }} en este día</p>
+          </div>
+          <div class="controls">
+            <input type="date" v-model="filtroFechaReservas" class="input-date">
+          </div>
+        </div>
+
+        <div class="dos-columnas">
+          <div class="form-card">
+            <h3 class="form-card-title">📅 Nueva reserva</h3>
+            <div class="form-fields">
+              <div class="field-group">
+                <label>Cliente</label>
+                <input v-model="nuevaReserva.nombre" placeholder="Ej: María García">
+              </div>
+              <div class="field-group">
+                <label>Teléfono (opcional)</label>
+                <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+              </div>
+              <div class="reserva-row">
+                <div class="field-group" style="flex: 1;">
+                  <label>Personas</label>
+                  <input type="number" min="1" max="50" v-model.number="nuevaReserva.personas">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label>Fecha</label>
+                  <input type="date" v-model="nuevaReserva.fecha">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label>Hora</label>
+                  <input type="time" v-model="nuevaReserva.hora">
+                </div>
+              </div>
+              <div class="field-group">
+                <label>Mesa asignada (opcional)</label>
+                <select v-model="nuevaReserva.mesaId">
+                  <option value="">Sin asignar</option>
+                  <option v-for="m in mesas" :key="m.id" :value="m.id">
+                    Mesa {{ m.numero }} {{ m.zona ? `(${m.zona})` : '' }}
+                  </option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label>Notas (opcional)</label>
+                <input v-model="nuevaReserva.notas" placeholder="Ej: cumpleaños, alergia al gluten...">
+              </div>
+              <button class="btn-primary btn-full" @click="crearReserva" :disabled="isCreandoReserva">
+                {{ isCreandoReserva ? 'Creando...' : '+ Guardar reserva' }}
               </button>
-              <button class="btn-eliminar" @click="eliminarEmpleado(emp.id, emp.nombre)">✕</button>
+            </div>
+          </div>
+
+          <div class="lista-card">
+            <div class="card-header-row">
+              <h3 class="form-card-title" style="margin-bottom: 0;">Reservas del día</h3>
+            </div>
+
+            <div class="filtros-rol" style="margin-top: 12px; margin-bottom: 18px;">
+              <button :class="{ active: filtroEstadoReserva === 'todas' }"     @click="filtroEstadoReserva = 'todas'">Todas</button>
+              <button :class="{ active: filtroEstadoReserva === 'pendiente' }" @click="filtroEstadoReserva = 'pendiente'">⏳ Pendientes</button>
+              <button :class="{ active: filtroEstadoReserva === 'confirmada' }" @click="filtroEstadoReserva = 'confirmada'">✓ Confirmadas</button>
+              <button :class="{ active: filtroEstadoReserva === 'cumplida' }"  @click="filtroEstadoReserva = 'cumplida'">🍽️ Cumplidas</button>
+              <button :class="{ active: filtroEstadoReserva === 'cancelada' }" @click="filtroEstadoReserva = 'cancelada'">✕ Canceladas</button>
+            </div>
+
+            <div v-if="reservasFiltradas.length === 0" class="empty-state-box">
+              No hay reservas en este filtro.
+            </div>
+
+            <div v-else class="reservas-grid">
+              <div v-for="r in reservasFiltradas" :key="r.id" class="reserva-card" :class="[`reserva-${r.estado}`, { 'reserva-vencida': esReservaVencida(r) }]">
+                <div class="reserva-hora">
+                  <span class="reserva-hora-num">{{ horaReserva(r) }}</span>
+                  <span class="reserva-personas">👥 {{ r.personas }}</span>
+                </div>
+                <div class="reserva-info">
+                  <div class="reserva-nombre">{{ r.nombre }}</div>
+                  <div class="reserva-meta">
+                    <span class="reserva-mesa">{{ nombreMesa(r.mesaId) }}</span>
+                    <span v-if="r.telefono" class="reserva-tel">📞 {{ r.telefono }}</span>
+                  </div>
+                  <div v-if="r.notas" class="reserva-notas">⚠ {{ r.notas }}</div>
+                </div>
+                <span v-if="esReservaVencida(r)" class="reserva-estado-badge vencida">⌛ Vencida</span>
+                <span v-else class="reserva-estado-badge" :class="r.estado">
+                  {{
+                    r.estado === 'pendiente' ? 'Pendiente' :
+                    r.estado === 'confirmada' ? 'Confirmada' :
+                    r.estado === 'cumplida' ? 'Cumplida' : 'Cancelada'
+                  }}
+                </span>
+                <div class="reserva-actions">
+                  <button class="r-btn edit" @click="abrirEditarReserva(r)" title="Editar">✏️</button>
+                  <button v-if="r.estado === 'pendiente'" class="r-btn confirm" @click="cambiarEstadoReserva(r.id, 'confirmada')" title="Confirmar">✓</button>
+                  <button v-if="r.estado === 'confirmada'" class="r-btn cumplida" @click="cambiarEstadoReserva(r.id, 'cumplida')" title="Marcar cumplida">🍽️</button>
+                  <button v-if="r.estado !== 'cancelada' && r.estado !== 'cumplida'" class="r-btn cancel" @click="cambiarEstadoReserva(r.id, 'cancelada')" title="Cancelar">✕</button>
+                  <button v-if="r.estado === 'cancelada' || r.estado === 'cumplida'" class="r-btn delete" @click="eliminarReserva(r.id)" title="Eliminar del historial">🗑️</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1702,6 +2066,60 @@ const exportarFacturasExcel = async () => {
       </div>
     </transition>
 
+    <!-- ══ MODAL: EDITAR RESERVA ══ -->
+    <transition name="fade">
+      <div v-if="mostrarModalEditarReserva" class="modal-backdrop" @click.self="mostrarModalEditarReserva = false">
+        <div class="modal-content modal-sm">
+          <div class="modal-header">
+            <h2>Editar reserva</h2>
+            <button class="btn-close" @click="mostrarModalEditarReserva = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-fields">
+              <div class="field-group">
+                <label>Cliente</label>
+                <input v-model="reservaEditando.nombre" placeholder="Ej: María García">
+              </div>
+              <div class="field-group">
+                <label>Teléfono (opcional)</label>
+                <input v-model="reservaEditando.telefono" placeholder="612 345 678">
+              </div>
+              <div class="reserva-row">
+                <div class="field-group">
+                  <label>Personas</label>
+                  <input type="number" min="1" max="50" v-model.number="reservaEditando.personas">
+                </div>
+                <div class="field-group">
+                  <label>Fecha</label>
+                  <input type="date" v-model="reservaEditando.fecha">
+                </div>
+                <div class="field-group">
+                  <label>Hora</label>
+                  <input type="time" v-model="reservaEditando.hora">
+                </div>
+              </div>
+              <div class="field-group">
+                <label>Mesa asignada (opcional)</label>
+                <select v-model="reservaEditando.mesaId">
+                  <option value="">Sin asignar</option>
+                  <option v-for="m in mesas" :key="m.id" :value="m.id">
+                    Mesa {{ m.numero }} {{ m.zona ? `(${m.zona})` : '' }}
+                  </option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label>Notas (opcional)</label>
+                <input v-model="reservaEditando.notas" placeholder="Ej: cumpleaños, alergias...">
+              </div>
+              <button @click="guardarEdicionReserva" class="btn-primary btn-full" :disabled="isGuardandoEdicionReserva">
+                {{ isGuardandoEdicionReserva ? 'Guardando...' : 'Guardar cambios' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
     <!-- ══ MODAL: ZONAS ══ -->
     <transition name="fade">
       <div v-if="mostrarModalZonas" class="modal-backdrop" @click.self="mostrarModalZonas = false">
@@ -1844,10 +2262,25 @@ const exportarFacturasExcel = async () => {
 
 * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; }
 
-.admin-layout { display: flex; min-height: 100vh; background: #f3f4f6; }
+.admin-layout { display: flex; height: 100vh; background: #f3f4f6; overflow: hidden; }
 
 /* ── SIDEBAR ── */
-.sidebar { width: 220px; background: #1e293b; color: white; padding: 24px 16px; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+.sidebar {
+  width: 220px;
+  height: 100vh;
+  background: linear-gradient(180deg, #1e293b, #0f172a);
+  color: white;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04), 2px 0 12px rgba(15, 23, 42, 0.15);
+}
+
+.sidebar::-webkit-scrollbar { width: 4px; }
+.sidebar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
 
 .sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 20px; border-bottom: 1px solid #334155; margin-bottom: 8px; }
 .sidebar-brand-logo { flex-shrink: 0; }
@@ -1869,7 +2302,7 @@ const exportarFacturasExcel = async () => {
 .btn-logout:hover { background: #ef4444; border-color: #ef4444; color: white; }
 
 /* ── CONTENT ── */
-.content { flex: 1; padding: 36px 40px; overflow-y: auto; min-width: 0; }
+.content { flex: 1; padding: 36px 40px; overflow-y: auto; min-width: 0; height: 100vh; }
 
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 16px; }
 .page-header h1 { font-size: 1.6rem; font-weight: 700; color: #0f172a; }
@@ -1877,16 +2310,61 @@ const exportarFacturasExcel = async () => {
 .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* ── BOTONES ── */
-.btn-primary { background: #4f46e5; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
-.btn-primary:hover:not(:disabled) { background: #4338ca; }
-.btn-primary:disabled { background: #a5b4fc; cursor: not-allowed; }
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 75%, #000));
+  color: white;
+  border: none;
+  padding: 11px 22px;
+  border-radius: var(--radius-md, 12px);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+  box-shadow: var(--shadow-glow);
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--color-acento, #4f46e5) 38%, transparent);
+}
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .btn-full { width: 100%; padding: 14px; font-size: 0.95rem; }
 
-.btn-secondary { background: white; color: #475569; border: 1px solid #cbd5e1; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: all 0.2s; }
-.btn-secondary:hover { background: #f8fafc; border-color: #94a3b8; }
+.btn-secondary {
+  background: white;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  padding: 11px 22px;
+  border-radius: var(--radius-md, 10px);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: transform 0.18s, box-shadow 0.18s, background 0.2s, border-color 0.2s;
+}
+.btn-secondary:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
 
-.btn-danger { background: #dc2626; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
-.btn-danger:hover { background: #b91c1c; }
+.btn-danger {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: white;
+  border: none;
+  padding: 11px 22px;
+  border-radius: var(--radius-md, 10px);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: transform 0.18s, box-shadow 0.18s, filter 0.2s;
+  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.28);
+}
+.btn-danger:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(220, 38, 38, 0.38);
+}
 
 .btn-close { background: #fee2e2; color: #dc2626; border: none; padding: 6px 12px; border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; }
 .btn-close:hover { background: #dc2626; color: white; }
@@ -1905,9 +2383,22 @@ const exportarFacturasExcel = async () => {
 .btn-reorder:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ── INPUTS ── */
-.input-num, .input-date, .input-select { padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.95rem; color: #0f172a; background: white; outline: none; transition: border-color 0.2s; }
-.input-num { width: 80px; text-align: center; }
-.input-date:focus, .input-num:focus, .input-select:focus { border-color: #4f46e5; }
+.input-num, .input-date, .input-select {
+  padding: 10px 14px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: white;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  font-family: inherit;
+}
+.input-num { width: 90px; text-align: center; }
+.input-date:focus, .input-num:focus, .input-select:focus {
+  border-color: var(--color-acento, #4f46e5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-acento, #4f46e5) 18%, transparent);
+}
 
 .btn-export-excel {
   padding: 10px 16px;
@@ -1931,16 +2422,50 @@ const exportarFacturasExcel = async () => {
 
 /* ── TABS ── */
 .tabs-zone-admin { display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 4px; align-items: center; }
-.tabs-zone-admin button { padding: 8px 18px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; font-weight: 600; cursor: pointer; color: #475569; transition: all 0.2s; white-space: nowrap; font-size: 0.9rem; }
-.tabs-zone-admin button.active { background: #4f46e5; color: white; border-color: #4f46e5; }
-.tabs-zone-admin button:hover:not(.active) { background: #f1f5f9; }
+.tabs-zone-admin button {
+  padding: 9px 18px;
+  border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--border, #e2e8f0);
+  background: white;
+  font-weight: 600;
+  cursor: pointer;
+  color: #475569;
+  transition: transform 0.18s, box-shadow 0.18s, background 0.2s, border-color 0.2s, color 0.2s;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+.tabs-zone-admin button.active {
+  background: linear-gradient(135deg, var(--color-acento, #4f46e5), color-mix(in srgb, var(--color-acento, #4f46e5) 75%, #000));
+  color: white;
+  border-color: transparent;
+  box-shadow: var(--shadow-glow);
+}
+.tabs-zone-admin button:hover:not(.active) {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+}
 .btn-gestionar-zonas { border-style: dashed !important; background: transparent !important; color: #64748b !important; }
 .btn-gestionar-zonas:hover { border-color: #4f46e5 !important; color: #4f46e5 !important; background: #ede9fe !important; }
 
 /* ── KPIs ── */
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
-.kpi-card { background: white; padding: 22px 24px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; flex-direction: column; gap: 8px; }
-.kpi-card.highlight { background: #f0fdf4; border-color: #bbf7d0; }
+.kpi-card {
+  background: white;
+  padding: 22px 24px;
+  border-radius: var(--radius-lg, 16px);
+  border: 1px solid var(--border, #e2e8f0);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.kpi-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.kpi-card.highlight {
+  background: linear-gradient(160deg, #f0fdf4, #dcfce7);
+  border-color: #bbf7d0;
+}
 .kpi-title { font-size: 0.78rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
 .kpi-card.highlight .kpi-title { color: #15803d; }
 .kpi-value { font-size: 1.75rem; font-weight: 800; color: #0f172a; }
@@ -1950,10 +2475,34 @@ const exportarFacturasExcel = async () => {
 .finanzas-filtros { display: flex; gap: 16px; margin-bottom: 20px; background: #f8fafc; padding: 14px 18px; border-radius: 10px; border: 1px solid #e2e8f0; flex-wrap: wrap; }
 .form-group-inline { display: flex; align-items: center; gap: 10px; }
 .form-group-inline label { font-size: 0.85rem; font-weight: 700; color: #475569; white-space: nowrap; }
-.tickets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.tickets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  max-height: calc(100vh - 420px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.tickets-grid::-webkit-scrollbar { width: 6px; }
+.tickets-grid::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; }
 
-.factura-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: all 0.2s; }
-.factura-card:hover { border-color: #cbd5e1; box-shadow: 0 6px 12px rgba(0,0,0,0.06); transform: translateY(-2px); }
+.factura-card {
+  background: white;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 14px);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+}
+.factura-card:hover {
+  border-color: color-mix(in srgb, var(--color-acento, #4f46e5) 35%, transparent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-3px);
+}
 .f-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #e2e8f0; }
 .f-mesa { font-weight: 800; color: #0f172a; font-size: 1rem; }
 .f-mesa small { color: #64748b; font-weight: 600; font-size: 0.82rem; }
@@ -1984,7 +2533,13 @@ const exportarFacturasExcel = async () => {
 /* ── DOS COLUMNAS ── */
 .dos-columnas { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
 .columna-izq { display: flex; flex-direction: column; gap: 0; }
-.form-card, .lista-card { background: white; border-radius: 14px; padding: 24px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.form-card, .lista-card {
+  background: white;
+  border-radius: var(--radius-lg, 16px);
+  padding: 24px;
+  border: 1px solid var(--border, #e2e8f0);
+  box-shadow: var(--shadow-sm);
+}
 .form-card { position: sticky; top: 0; }
 .form-card-title { font-size: 1rem; font-weight: 700; color: #0f172a; margin-bottom: 18px; }
 .card-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
@@ -1993,8 +2548,22 @@ const exportarFacturasExcel = async () => {
 .form-fields { display: flex; flex-direction: column; gap: 14px; }
 .field-group { display: flex; flex-direction: column; gap: 6px; }
 .field-group label, .field-label { font-size: 0.82rem; font-weight: 600; color: #475569; }
-.field-group input, .field-group select { padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.95rem; color: #0f172a; background: white; outline: none; transition: border-color 0.2s; width: 100%; }
-.field-group input:focus, .field-group select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.08); }
+.field-group input, .field-group select {
+  padding: 11px 14px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 10px);
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: white;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  width: 100%;
+  font-family: inherit;
+}
+.field-group input:focus, .field-group select:focus {
+  border-color: var(--color-acento, #4f46e5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-acento, #4f46e5) 18%, transparent);
+}
 .two-cols-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-actions-stacked { display: flex; flex-direction: column; gap: 8px; }
 
@@ -2096,26 +2665,154 @@ const exportarFacturasExcel = async () => {
 .menu-plato-price { color: #4f46e5; font-size: 1rem; font-weight: 900; white-space: nowrap; }
 
 /* ── EMPLEADOS ── */
+.empleados-list {
+  max-height: calc(100vh - 380px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.empleados-list::-webkit-scrollbar { width: 6px; }
+.empleados-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; }
+
 .empleado-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
 .empleado-row:last-child { border-bottom: none; }
 .empleado-avatar { width: 38px; height: 38px; background: #4f46e5; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
-.rol-badge { font-size: 0.72rem; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: capitalize; flex-shrink: 0; }
-.rol-badge.admin    { background: #ede9fe; color: #6d28d9; }
-.rol-badge.camarero { background: #dbeafe; color: #1d4ed8; }
-.rol-badge.cocinero { background: #fef3c7; color: #b45309; }
-.activo-toggle { border: none; padding: 4px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; cursor: pointer; transition: filter 0.2s; flex-shrink: 0; }
-.activo-toggle.activo   { background: #dcfce7; color: #16a34a; }
-.activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; }
-.activo-toggle:hover { filter: brightness(0.94); }
+.rol-badge { font-size: 0.72rem; font-weight: 800; padding: 5px 11px; border-radius: 20px; text-transform: capitalize; flex-shrink: 0; letter-spacing: 0.3px; }
+.rol-badge.admin    { background: #ede9fe; color: #6d28d9; box-shadow: inset 0 0 0 1px rgba(109, 40, 217, 0.15); }
+.rol-badge.camarero { background: #dbeafe; color: #1d4ed8; box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.15); }
+.rol-badge.cocinero { background: #fef3c7; color: #b45309; box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.15); }
+.activo-toggle {
+  border: none; padding: 5px 12px; border-radius: 20px;
+  font-size: 0.72rem; font-weight: 800; cursor: pointer;
+  transition: filter 0.2s, transform 0.18s;
+  flex-shrink: 0;
+}
+.activo-toggle.activo   { background: #dcfce7; color: #16a34a; box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.2); }
+.activo-toggle.inactivo { background: #f1f5f9; color: #94a3b8; box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.2); }
+.activo-toggle:hover { filter: brightness(1.05); transform: translateY(-1px); }
 .filtros-rol { display: flex; gap: 8px; flex-wrap: wrap; }
 .filtros-rol button { background: #f1f5f9; border: none; padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; color: #64748b; cursor: pointer; transition: 0.2s; }
 .filtros-rol button.active { background: #4f46e5; color: white; }
 .filtros-rol button:hover:not(.active) { background: #e2e8f0; }
 
 /* ── INVITACIONES ── */
-.codigo-badge { font-family: 'Courier New', monospace; font-size: 0.8rem; font-weight: 800; padding: 4px 10px; border-radius: 8px; letter-spacing: 2px; flex-shrink: 0; }
-.codigo-badge.pendiente { background: #fef3c7; color: #b45309; border: 1px dashed #fcd34d; }
-.codigo-badge.usada     { background: #dcfce7; color: #16a34a; }
+.codigo-badge {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm, 8px);
+  letter-spacing: 2px;
+  flex-shrink: 0;
+}
+.codigo-badge.pendiente {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  color: #b45309;
+  border: 1px dashed #f59e0b;
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.18);
+}
+.codigo-badge.usada { background: #dcfce7; color: #16a34a; box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.2); }
+
+/* ── RESERVAS ── */
+.reserva-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.reserva-row .field-group { min-width: 0; }
+.reserva-row input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 12px;
+}
+
+.reservas-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 360px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.reservas-grid::-webkit-scrollbar { width: 6px; }
+.reservas-grid::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; }
+
+.reserva-card {
+  display: grid;
+  grid-template-columns: 90px 1fr auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  background: white;
+  border: 1px solid var(--border, #e2e8f0);
+  border-left: 4px solid #94a3b8;
+  border-radius: var(--radius-md, 12px);
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.18s, box-shadow 0.18s;
+}
+.reserva-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+
+.reserva-card.reserva-pendiente { border-left-color: #d97706; }
+.reserva-card.reserva-confirmada { border-left-color: #16a34a; background: linear-gradient(160deg, #f0fdf4, white); }
+.reserva-card.reserva-cumplida { border-left-color: #4338ca; opacity: 0.85; }
+.reserva-card.reserva-cancelada { border-left-color: #dc2626; opacity: 0.55; }
+.reserva-card.reserva-vencida {
+  border-left-color: #f59e0b;
+  background: linear-gradient(160deg, #fffbeb, white);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.15);
+}
+
+.reserva-hora {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: var(--radius-sm, 10px);
+  flex-shrink: 0;
+}
+.reserva-hora-num { font-size: 1.15rem; font-weight: 800; color: #0f172a; line-height: 1; font-variant-numeric: tabular-nums; }
+.reserva-personas { font-size: 0.7rem; font-weight: 700; color: #64748b; }
+
+.reserva-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.reserva-nombre { font-size: 0.98rem; font-weight: 800; color: #0f172a; }
+.reserva-meta { display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.78rem; color: #64748b; font-weight: 600; }
+.reserva-tel { color: #475569; }
+.reserva-notas {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #b45309;
+  background: #fef3c7;
+  border-left: 3px solid #d97706;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin-top: 2px;
+}
+
+.reserva-estado-badge { font-size: 0.72rem; font-weight: 800; padding: 5px 11px; border-radius: 20px; letter-spacing: 0.3px; }
+.reserva-estado-badge.pendiente  { background: #fef3c7; color: #b45309; }
+.reserva-estado-badge.confirmada { background: #dcfce7; color: #16a34a; }
+.reserva-estado-badge.cumplida   { background: #e0e7ff; color: #4338ca; }
+.reserva-estado-badge.cancelada  { background: #fee2e2; color: #dc2626; }
+.reserva-estado-badge.vencida    { background: #ffedd5; color: #c2410c; box-shadow: inset 0 0 0 1px rgba(194, 65, 12, 0.25); }
+
+.reserva-actions { display: flex; gap: 6px; }
+.r-btn {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: transform 0.15s, filter 0.18s, border-color 0.18s, background 0.18s;
+}
+.r-btn:hover { transform: translateY(-1px); filter: brightness(1.05); }
+.r-btn.confirm  { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
+.r-btn.cumplida { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.r-btn.cancel   { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+.r-btn.delete   { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
+.r-btn.edit     { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
 
 /* ── EMOJI PICKER ── */
 .emoji-selector-container { position: relative; }
@@ -2302,15 +2999,33 @@ const exportarFacturasExcel = async () => {
 
 /* ── MODALES ── */
 .modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,0.6); backdrop-filter: blur(4px); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-.modal-content { background: #f8fafc; width: 860px; max-width: 95vw; max-height: 90vh; border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.2); animation: modalIn 0.25s ease-out; }
+.modal-content {
+  background: #f8fafc;
+  width: 860px;
+  max-width: 95vw;
+  max-height: 90vh;
+  border-radius: var(--radius-xl, 20px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 40px 80px rgba(15, 23, 42, 0.35);
+  animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
 .modal-sm { width: 700px; }
 .modal-categorias { width: 1080px; max-width: 98vw; }
 .modal-categorias .dos-columnas { grid-template-columns: 360px minmax(0,1fr); }
-.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; background: white; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; background: white; border-bottom: 3px solid var(--color-acento, #4f46e5); flex-shrink: 0; transition: border-color 0.3s; }
 .modal-header h2 { font-size: 1.2rem; font-weight: 800; color: #0f172a; }
 .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
 
-.modal-ticket { background: white; width: 380px; border-radius: 14px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.2); animation: modalIn 0.25s ease-out; }
+.modal-ticket {
+  background: white;
+  width: 380px;
+  border-radius: var(--radius-xl, 20px);
+  overflow: hidden;
+  box-shadow: 0 40px 80px rgba(15, 23, 42, 0.35);
+  animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
 .ticket-paper-admin { padding: 28px 24px 20px; font-family: 'Courier New', Courier, monospace; }
 .ticket-top { text-align: center; margin-bottom: 16px; }
 .ticket-top h2 { font-size: 1.4rem; font-weight: 900; margin: 0; }

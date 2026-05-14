@@ -188,6 +188,15 @@ service cloud.firestore {
         allow create:         if (isAdmin() || isCamarero()) && sameLocal(localId);
         allow update, delete: if isAdmin() && sameLocal(localId);
       }
+
+      // Reservas: cualquier staff crea y lee; staff puede cambiar estado
+      // (confirmar, cancelar, marcar cumplida). Solo admin borra.
+      match /reservas/{reservaId} {
+        allow read:   if isStaff() && sameLocal(localId);
+        allow create: if isStaff() && sameLocal(localId);
+        allow update: if isStaff() && sameLocal(localId);
+        allow delete: if isAdmin() && sameLocal(localId);
+      }
     }
 
     // Bloqueo explícito: cualquier ruta no contemplada queda denegada.
