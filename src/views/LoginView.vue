@@ -2,9 +2,11 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
+import { useNotify } from '../composables/useNotify'
 
 const router = useRouter()
 const { login, resetPassword } = useAuth()
+const { toast } = useNotify()
 
 const email = ref('')
 const password = ref('')
@@ -82,7 +84,7 @@ const handleResetPassword = async () => {
   isLoading.value = true
   try {
     await resetPassword(email.value)
-    alert(`Te hemos enviado un enlace de recuperación a:\n${email.value}\n\nRevisa tu bandeja de entrada (y la carpeta de Spam).`)
+    toast.success('Correo enviado', `Revisa la bandeja de entrada de ${email.value} (y la carpeta de Spam).`)
   } catch (error: any) {
     errorMsg.value = error.message
   } finally {

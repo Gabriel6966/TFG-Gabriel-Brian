@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
-  doc, updateDoc, Timestamp
+  doc, Timestamp, runTransaction
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
@@ -98,22 +98,22 @@ onMounted(() => {
     where('estado', 'in', ['en_cocina', 'listo'])
   )
 
-  const idsConocidas = new Set<string>()
+  let primeraCarga = true
 
   unsubscribe = onSnapshot(q, (snapshot) => {
-    snapshot.docChanges().forEach(change => {
-      if (change.type === 'added') {
-        const id = change.doc.id
-        if (idsConocidas.size > 0) {
+    if (!primeraCarga) {
+      snapshot.docChanges().forEach(change => {
+        if (change.type === 'added') {
+          const id = change.doc.id
           reproducirSonido()
           nuevasIds.value = new Set([...nuevasIds.value, id])
           setTimeout(() => {
             nuevasIds.value = new Set([...nuevasIds.value].filter(i => i !== id))
           }, 3000)
         }
-        idsConocidas.add(id)
-      }
-    })
+      })
+    }
+    primeraCarga = false
 
     comandas.value = snapshot.docs.map(d => ({
       id: d.id,
@@ -133,27 +133,48 @@ onUnmounted(() => {
 
 const toggleLinea = async (comanda: Comanda, index: number) => {
   if (!localId.value) return
+  const ref = doc(db, `locales/${localId.value}/comandas`, comanda.id)
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return
+      const data = snap.data()
+      // Si el camarero ya entregó o se cobró, no revertir desde cocina.
+      if (data.estado === 'entregado' || data.estado === 'pagado') return
 
-  const estadoLineas: Record<string, boolean> = { ...(comanda.estadoLineas ?? {}) }
-  estadoLineas[index] = !estadoLineas[index]
+      const estadoLineas: Record<string, boolean> = { ...(data.estadoLineas ?? {}) }
+      estadoLineas[index] = !estadoLineas[index]
 
-  const lineasListas = comanda.lineas.every((_, i) => estadoLineas[i] === true)
-  const nuevoEstado = lineasListas ? 'listo' : 'en_cocina'
-
-  await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
-    estadoLineas,
-    estado: nuevoEstado
-  })
+      const lineas = (data.lineas ?? []) as LineaPedido[]
+      const lineasListas = lineas.every((_, i) => estadoLineas[i] === true)
+      tx.update(ref, {
+        estadoLineas,
+        estado: lineasListas ? 'listo' : 'en_cocina'
+      })
+    })
+  } catch (e) {
+    console.error('toggleLinea fallo:', e)
+  }
 }
 
 const marcarTodaLista = async (comanda: Comanda) => {
   if (!localId.value) return
-  const estadoLineas: Record<string, boolean> = {}
-  comanda.lineas.forEach((_, i) => { estadoLineas[i] = true })
-  await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
-    estadoLineas,
-    estado: 'listo'
-  })
+  const ref = doc(db, `locales/${localId.value}/comandas`, comanda.id)
+  try {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return
+      const data = snap.data()
+      if (data.estado === 'entregado' || data.estado === 'pagado') return
+
+      const estadoLineas: Record<string, boolean> = {}
+      const lineas = (data.lineas ?? []) as LineaPedido[]
+      lineas.forEach((_, i) => { estadoLineas[i] = true })
+      tx.update(ref, { estadoLineas, estado: 'listo' })
+    })
+  } catch (e) {
+    console.error('marcarTodaLista fallo:', e)
+  }
 }
 
 const minutosEspera = (fecha: Timestamp): number => {
@@ -343,9 +364,10 @@ const lineaEstaLista = (comanda: Comanda, index: number): boolean => {
   padding: 0 28px;
   height: 64px;
   background: #1e293b;
-  border-bottom: 1px solid #334155;
+  border-bottom: 3px solid var(--color-acento, #4f46e5);
   flex-shrink: 0;
   gap: 20px;
+  transition: border-color 0.3s;
 }
 
 .top-bar-left { display: flex; align-items: center; gap: 12px; }

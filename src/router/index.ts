@@ -35,18 +35,6 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['camarero', 'admin'] }
     },
     {
-      path: '/menu/:id',
-      name: 'Menu',
-      component: vistas['../views/MenuView.vue'],
-      meta: { requiresAuth: true, roles: ['camarero', 'admin'] }
-    },
-    {
-      path: '/checkout',
-      name: 'Checkout',
-      component: vistas['../views/CheckoutView.vue'],
-      meta: { requiresAuth: true, roles: ['camarero', 'admin'] }
-    },
-    {
       path: '/admin',
       name: 'Admin',
       component: vistas['../views/AdminView.vue'],
@@ -95,22 +83,28 @@ router.beforeEach(async (to) => {
     return { name: 'Login' }
   }
 
-  if (to.meta.requiresGuest && currentUser.value) {
+  // Solo redirigimos desde rutas de invitado si tenemos auth Y rol válido.
+  // Sin esto un user autenticado sin perfil quedaría rebotando entre Login
+  // (requiresGuest) y Tables (default de redirectByRole).
+  if (to.meta.requiresGuest && currentUser.value && userRole.value) {
     return redirectByRole(userRole.value)
   }
 
-  if (to.meta.roles && userRole.value) {
+  // Si la ruta requiere roles, exigimos rol válido + permitido. Sin rol → Login.
+  if (to.meta.roles) {
     const rolesPermitidos = to.meta.roles as string[]
-    if (!rolesPermitidos.includes(userRole.value)) {
+    if (!userRole.value || !rolesPermitidos.includes(userRole.value)) {
       return redirectByRole(userRole.value)
     }
   }
 })
 
 function redirectByRole(role: string | null) {
-  if (role === 'admin') return { name: 'Admin' }
+  if (role === 'admin')    return { name: 'Admin' }
   if (role === 'cocinero') return { name: 'Kitchen' }
-  return { name: 'Tables' }
+  if (role === 'camarero') return { name: 'Tables' }
+  // Sin rol: lo mandamos a Login (no a Tables, que requiere rol y crashearía).
+  return { name: 'Login' }
 }
 
 export default router

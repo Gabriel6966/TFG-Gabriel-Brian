@@ -11,6 +11,9 @@ import EmojiPicker from 'vue3-emoji-picker'
 import FloorEditor from '../components/pos/FloorEditor.vue'
 import PoweredByEasyOrder from '../components/branding/PoweredByEasyOrder.vue'
 import emailjs from '@emailjs/browser'
+import { useNotify } from '../composables/useNotify'
+
+const { toast, confirm: confirmDialog } = useNotify()
 
 // ── INTERFACES ────────────────────────────────────────────────────
 
@@ -163,8 +166,8 @@ const COLORES_PRESET = [
   '#0891b2', '#7c3aed', '#db2777', '#0f172a'
 ]
 
-const CLOUDINARY_CLOUD = 'dnlcwm5x9'
-const CLOUDINARY_PRESET = 'easyorder_uploads'
+const CLOUDINARY_CLOUD = import.meta.env.VITE_CLOUDINARY_CLOUD
+const CLOUDINARY_PRESET = import.meta.env.VITE_CLOUDINARY_PRESET
 
 // ── LISTENERS ────────────────────────────────────────────────────
 
@@ -353,11 +356,9 @@ onMounted(() => {
   )
 
   unsubscribeEmpleados = onSnapshot(
-    collection(db, 'usuarios'),
+    query(collection(db, 'usuarios'), where('localId', '==', localId.value)),
     s => {
-      empleados.value = s.docs
-        .map(d => ({ id: d.id, ...d.data() } as Empleado))
-        .filter(u => u.localId === localId.value)
+      empleados.value = s.docs.map(d => ({ id: d.id, ...d.data() } as Empleado))
     }
   )
 })
@@ -394,9 +395,9 @@ const guardarConfig = async () => {
     await setDoc(doc(db, `locales/${localId.value}/config`, 'negocio'), {
       ...configEditando.value
     })
-    alert('✓ Configuración guardada correctamente.')
+    toast.success('Configuración guardada')
   } catch {
-    alert('Error al guardar la configuración.')
+    toast.error('No se pudo guardar la configuración.')
   } finally {
     guardandoConfig.value = false
   }
@@ -406,8 +407,8 @@ const subirLogo = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length) return
   const file = input.files[0]
-  if (!file.type.startsWith('image/')) return alert('Solo se permiten imágenes.')
-  if (file.size > 2 * 1024 * 1024) return alert('La imagen no puede superar 2MB.')
+  if (!file.type.startsWith('image/')) { input.value = ''; return toast.warning('Solo se permiten imágenes.') }
+  if (file.size > 2 * 1024 * 1024)    { input.value = ''; return toast.warning('La imagen no puede superar 2MB.') }
   subiendoLogo.value = true
   try {
     const formData = new FormData()
@@ -418,11 +419,13 @@ const subirLogo = async (e: Event) => {
       `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,
       { method: 'POST', body: formData }
     )
+    if (!res.ok) throw new Error('Upload failed')
     const data = await res.json()
-    configEditando.value.logoUrl = data.secure_url
+    configEditando.value.logoUrl = data.secure_url || ''
   } catch {
-    alert('Error al subir la imagen.')
+    toast.error('No se pudo subir la imagen.')
   } finally {
+    input.value = ''
     subiendoLogo.value = false
   }
 }
@@ -436,7 +439,7 @@ const handleUpdatePosition = async (id: string, x: number, y: number) => {
   try {
     await updateDoc(doc(db, `locales/${localId.value}/mesas`, id), { x, y })
   } catch {
-    alert('Error al guardar la posición de la mesa.')
+    toast.error('No se pudo guardar la posición de la mesa.')
   }
 }
 
@@ -448,15 +451,17 @@ const handleSelectTable = (table: any) => {
 
 const generarMesas = async () => {
   if (!localId.value) return
-  if (zonas.value.length === 0) return alert('⚠️ Crea una Zona antes de añadir mesas.')
+  if (zonas.value.length === 0) return toast.warning('Crea una zona antes de añadir mesas.')
   if (!zonaActiva.value) zonaActiva.value = zonas.value[0].nombre
   isLoading.value = true
   try {
     const mesasEnZona = mesas.value.filter(m => m.zona === zonaActiva.value)
     const ultimaNumero = mesasEnZona.length > 0 ? Math.max(...mesasEnZona.map(m => m.numero)) : 0
+    const batch = writeBatch(db)
+    const mesasRef = collection(db, `locales/${localId.value}/mesas`)
     for (let i = 1; i <= cantidadMesas.value; i++) {
       const index = mesasEnZona.length + i - 1
-      await addDoc(collection(db, `locales/${localId.value}/mesas`), {
+      batch.set(doc(mesasRef), {
         numero: ultimaNumero + i,
         estado: 'libre',
         capacidad: 4,
@@ -465,40 +470,57 @@ const generarMesas = async () => {
         y: 15 + Math.floor(index / 4) * 20
       })
     }
-  } catch { alert('Error al generar mesas.') }
+    await batch.commit()
+  } catch { toast.error('No se pudieron generar las mesas.') }
   finally { isLoading.value = false }
 }
 
 const resetearMesas = async () => {
-  if (!localId.value || !confirm('¿Borrar TODAS las mesas? Esta acción no se puede deshacer.')) return
+  if (!localId.value) return
+  const ok = await confirmDialog({
+    title: 'Borrar TODAS las mesas',
+    message: 'Esta acción no se puede deshacer.',
+    confirmLabel: 'Borrar todo',
+    variant: 'danger'
+  })
+  if (!ok) return
   try {
-    await Promise.all(mesas.value.map(m => deleteDoc(doc(db, `locales/${localId.value}/mesas`, m.id))))
-  } catch { alert('Error al borrar las mesas.') }
+    // Firestore limita un batch a 500 ops; si algún día hay más mesas que eso
+    // habría que partirlo, pero para un local de hostelería real está sobrado.
+    const batch = writeBatch(db)
+    for (const m of mesas.value) {
+      batch.delete(doc(db, `locales/${localId.value}/mesas`, m.id))
+    }
+    await batch.commit()
+  } catch { toast.error('No se pudieron borrar las mesas.') }
 }
 
 // ── ACCIONES: ZONAS ───────────────────────────────────────────────
 
 const guardarZona = async () => {
-  if (!localId.value || !nuevaZona.value.nombre.trim()) return alert('El nombre es obligatorio.')
+  if (!localId.value || !nuevaZona.value.nombre.trim()) return toast.warning('El nombre es obligatorio.')
   const yaExiste = zonas.value.some(z => z.nombre.toLowerCase() === nuevaZona.value.nombre.toLowerCase())
-  if (yaExiste) return alert('Esa zona ya existe.')
+  if (yaExiste) return toast.warning('Esa zona ya existe.')
   try {
     await addDoc(collection(db, `locales/${localId.value}/zonas`), { ...nuevaZona.value })
     nuevaZona.value = { nombre: '', icono: '🛋️' }
-  } catch { alert('Error al crear la zona.') }
+  } catch { toast.error('No se pudo crear la zona.') }
 }
 
 const eliminarZona = async (id: string, nombre: string) => {
   if (!localId.value) return
   const afectadas = mesas.value.filter(m => m.zona === nombre).length
-  const msg = afectadas > 0
-    ? `¿Eliminar "${nombre}"? Hay ${afectadas} mesas que perderán su zona.`
-    : `¿Eliminar la zona "${nombre}"?`
-  if (!confirm(msg)) return
+  const ok = await confirmDialog({
+    title: `Eliminar la zona "${nombre}"`,
+    message: afectadas > 0 ? `Hay ${afectadas} mesa${afectadas !== 1 ? 's' : ''} que perderá${afectadas !== 1 ? 'n' : ''} su zona.` : '',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try {
     await deleteDoc(doc(db, `locales/${localId.value}/zonas`, id))
     if (zonaActiva.value === nombre) zonaActiva.value = zonas.value.find(z => z.id !== id)?.nombre || ''
-  } catch { alert('Error al eliminar la zona.') }
+  } catch { toast.error('No se pudo eliminar la zona.') }
 }
 
 // ── ACCIONES: CATEGORÍAS ──────────────────────────────────────────
@@ -507,8 +529,8 @@ const subirFotoCategoria = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length || !localId.value) return
   const file = input.files[0]
-  if (!file.type.startsWith('image/')) { input.value = ''; return alert('Solo se permiten imágenes.') }
-  if (file.size > 3 * 1024 * 1024) { input.value = ''; return alert('La imagen no puede superar 3MB.') }
+  if (!file.type.startsWith('image/')) { input.value = ''; return toast.warning('Solo se permiten imágenes.') }
+  if (file.size > 3 * 1024 * 1024)    { input.value = ''; return toast.warning('La imagen no puede superar 3MB.') }
   subiendoFotoCategoria.value = true
   try {
     const formData = new FormData()
@@ -519,7 +541,7 @@ const subirFotoCategoria = async (e: Event) => {
     if (!res.ok) throw new Error('Upload failed')
     const data = await res.json()
     nuevaCategoria.value.imageUrl = data.secure_url || ''
-  } catch { alert('Error al subir la foto.') }
+  } catch { toast.error('No se pudo subir la foto.') }
   finally { input.value = ''; subiendoFotoCategoria.value = false }
 }
 
@@ -537,13 +559,13 @@ const editarCategoria = (cat: Categoria) => {
 }
 
 const guardarCategoria = async () => {
-  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return alert('El nombre es obligatorio.')
+  if (!localId.value || !nuevaCategoria.value.nombre.trim()) return toast.warning('El nombre es obligatorio.')
   const nombreNuevo = nuevaCategoria.value.nombre.trim()
   const nombreAnterior = categorias.value.find(c => c.id === editandoCategoriaId.value)?.nombre
   const yaExiste = categorias.value.some(c =>
     c.nombre.toLowerCase() === nombreNuevo.toLowerCase() && c.id !== editandoCategoriaId.value
   )
-  if (yaExiste) return alert('Esa categoría ya existe.')
+  if (yaExiste) return toast.warning('Esa categoría ya existe.')
   try {
     const payload = {
       nombre: nombreNuevo,
@@ -565,7 +587,7 @@ const guardarCategoria = async () => {
       await addDoc(collection(db, `locales/${localId.value}/categorias`), { ...payload, orderIndex: siguienteOrden, createdAt: new Date() })
     }
     resetCategoriaForm()
-  } catch { alert('Error al guardar la categoría.') }
+  } catch { toast.error('No se pudo guardar la categoría.') }
 }
 
 const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
@@ -581,16 +603,21 @@ const moverCategoria = async (cat: Categoria, direccion: -1 | 1) => {
     await Promise.all(lista.map((categoria, index) =>
       updateDoc(doc(db, `locales/${localId.value}/categorias`, categoria.id), { orderIndex: index })
     ))
-  } catch { alert('Error al reordenar las categorías.') }
+  } catch { toast.error('No se pudieron reordenar las categorías.') }
 }
 
 const eliminarCategoria = async (id: string, nombre: string) => {
   if (!localId.value) return
   const afectados = productos.value.filter(p => p.category === nombre).length
-  const msg = afectados > 0 ? `¿Eliminar "${nombre}"? ${afectados} productos quedarán sin categoría.` : `¿Eliminar la categoría "${nombre}"?`
-  if (!confirm(msg)) return
+  const ok = await confirmDialog({
+    title: `Eliminar "${nombre}"`,
+    message: afectados > 0 ? `${afectados} producto${afectados !== 1 ? 's' : ''} quedará${afectados !== 1 ? 'n' : ''} sin categoría.` : '',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await deleteDoc(doc(db, `locales/${localId.value}/categorias`, id)) }
-  catch { alert('Error al eliminar.') }
+  catch { toast.error('No se pudo eliminar.') }
 }
 
 // ── ACCIONES: PRODUCTOS ───────────────────────────────────────────
@@ -623,8 +650,8 @@ const subirFotoProducto = async (e: Event) => {
   const input = e.target as HTMLInputElement
   if (!input.files?.length || !localId.value) return
   const file = input.files[0]
-  if (!file.type.startsWith('image/')) { input.value = ''; return alert('Solo se permiten imágenes.') }
-  if (file.size > 3 * 1024 * 1024) { input.value = ''; return alert('La imagen no puede superar 3MB.') }
+  if (!file.type.startsWith('image/')) { input.value = ''; return toast.warning('Solo se permiten imágenes.') }
+  if (file.size > 3 * 1024 * 1024)    { input.value = ''; return toast.warning('La imagen no puede superar 3MB.') }
   subiendoFotoProducto.value = true
   try {
     const formData = new FormData()
@@ -635,7 +662,7 @@ const subirFotoProducto = async (e: Event) => {
     if (!res.ok) throw new Error('Upload failed')
     const data = await res.json()
     nuevoProducto.value.imageUrl = data.secure_url || ''
-  } catch { alert('Error al subir la foto.') }
+  } catch { toast.error('No se pudo subir la foto.') }
   finally { input.value = ''; subiendoFotoProducto.value = false }
 }
 
@@ -643,9 +670,9 @@ const quitarFotoProducto = () => { nuevoProducto.value.imageUrl = '' }
 
 const guardarProducto = async () => {
   if (!localId.value) return
-  if (!nuevoProducto.value.name.trim()) return alert('El nombre es obligatorio.')
-  if (nuevoProducto.value.price <= 0) return alert('El precio debe ser mayor que 0.')
-  if (!nuevoProducto.value.category) return alert('Selecciona una categoría.')
+  if (!nuevoProducto.value.name.trim()) return toast.warning('El nombre es obligatorio.')
+  if (nuevoProducto.value.price <= 0)   return toast.warning('El precio debe ser mayor que 0.')
+  if (!nuevoProducto.value.category)    return toast.warning('Selecciona una categoría.')
   try {
     const payload = {
       name: nuevoProducto.value.name.trim(),
@@ -661,13 +688,19 @@ const guardarProducto = async () => {
       await addDoc(collection(db, `locales/${localId.value}/productos`), payload)
     }
     resetProductoForm()
-  } catch { alert('Error al guardar el producto.') }
+  } catch { toast.error('No se pudo guardar el producto.') }
 }
 
 const eliminarProducto = async (id: string, nombre: string) => {
-  if (!localId.value || !confirm(`¿Eliminar "${nombre}"?`)) return
+  if (!localId.value) return
+  const ok = await confirmDialog({
+    title: `Eliminar "${nombre}"`,
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await deleteDoc(doc(db, `locales/${localId.value}/productos`, id)) }
-  catch { alert('Error al eliminar.') }
+  catch { toast.error('No se pudo eliminar.') }
 }
 
 // ── ACCIONES: INVITACIONES ────────────────────────────────────────
@@ -677,75 +710,93 @@ const generarCodigo = () => Array.from({ length: 8 }, () => 'ABCDEFGHJKLMNPQRSTU
 const crearInvitacion = async () => {
   if (!localId.value || !nuevaInvitacion.value.email.trim()) return
   isCreandoInvitacion.value = true
-  
-  try {
-    // 1. Generamos el código y lo guardamos en una variable
-    const nuevoCodigo = generarCodigo()
-    const emailDestino = nuevaInvitacion.value.email.trim().toLowerCase()
 
-    // 2. Lo guardamos en Firebase (igual que antes)
-    await addDoc(collection(db, 'invitaciones'), { 
-      email: emailDestino, 
-      rol: nuevaInvitacion.value.rol, 
-      codigo: nuevoCodigo, 
-      estado: 'pendiente', 
-      localId: localId.value, 
-      localNombre: localId.value, 
-      creadoEn: new Date() 
+  const nuevoCodigo = generarCodigo()
+  const emailDestino = nuevaInvitacion.value.email.trim().toLowerCase()
+  // El código se usa como ID del documento — así /register puede hacer
+  // `get` por ID y no necesita permiso de `list` (cierra la enumeración).
+  const invitacionRef = doc(db, 'invitaciones', nuevoCodigo)
+
+  try {
+    await setDoc(invitacionRef, {
+      email: emailDestino,
+      rol: nuevaInvitacion.value.rol,
+      codigo: nuevoCodigo,
+      estado: 'pendiente',
+      localId: localId.value,
+      localNombre: localId.value,
+      creadoEn: new Date()
     })
 
-    // 3. ¡MANDAMOS EL CORREO CON EMAILJS!
-    // Sustituye los strings vacíos por tus IDs reales de EmailJS
-    const serviceID = 'service_2aiiuq6'
-    const templateID = 'template_rk7yu8c'
-    const publicKey = '8yatETfTGVpx47fWE'
+    const serviceID = import.meta.env.VITE_EMAILJS_SERVICE_ID
+    const templateID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID
+    const publicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY
 
-    const templateParams = {
-      user_email: emailDestino, // El email al que se lo mandamos
-      rol: nuevaInvitacion.value.rol, // Para que el template imprima "camarero" o "cocinero"
-      codigo: nuevoCodigo // El código mágico
+    try {
+      await emailjs.send(serviceID, templateID, {
+        user_email: emailDestino,
+        rol: nuevaInvitacion.value.rol,
+        codigo: nuevoCodigo
+      }, publicKey)
+    } catch (emailError) {
+      // El correo falló: borramos la invitación recién creada para que el admin
+      // pueda reintentar. Si no, queda huérfana sin que el empleado se entere.
+      try { await deleteDoc(invitacionRef) } catch { /* nada que hacer */ }
+      throw emailError
     }
 
-    await emailjs.send(serviceID, templateID, templateParams, publicKey)
-    console.log('¡Correo de invitación enviado con éxito!')
-
-    // 4. Limpiamos el formulario
     nuevaInvitacion.value = { email: '', rol: 'camarero' }
-    alert('Invitación creada y correo enviado al empleado.')
+    toast.success('Invitación enviada', 'El empleado recibirá el código por correo.')
 
-  } catch (error) { 
+  } catch (error) {
     console.error('Error:', error)
-    alert('Hubo un error al crear la invitación o enviar el correo.') 
-  } finally { 
-    isCreandoInvitacion.value = false 
+    toast.error('No se pudo crear la invitación', 'Comprueba el correo y la conexión.')
+  } finally {
+    isCreandoInvitacion.value = false
   }
 }
 
 const eliminarInvitacion = async (id: string) => {
-  if (!confirm('¿Eliminar esta invitación?')) return
+  const ok = await confirmDialog({
+    title: 'Eliminar esta invitación',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await deleteDoc(doc(db, 'invitaciones', id)) }
-  catch { alert('Error al eliminar.') }
+  catch { toast.error('No se pudo eliminar.') }
 }
 
 const limpiarInvitacionesUsadas = async () => {
   const usadas = invitaciones.value.filter(i => i.estado === 'usada')
-  if (usadas.length === 0) return alert('No hay códigos usados que limpiar.')
-  if (!confirm(`¿Borrar ${usadas.length} códigos ya utilizados?`)) return
+  if (usadas.length === 0) return toast.info('No hay códigos usados que limpiar.')
+  const ok = await confirmDialog({
+    title: `Borrar ${usadas.length} código${usadas.length !== 1 ? 's' : ''} ya utilizado${usadas.length !== 1 ? 's' : ''}`,
+    confirmLabel: 'Borrar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await Promise.all(usadas.map(inv => deleteDoc(doc(db, 'invitaciones', inv.id)))) }
-  catch { alert('Error al limpiar.') }
+  catch { toast.error('No se pudo limpiar.') }
 }
 
 // ── ACCIONES: EMPLEADOS ───────────────────────────────────────────
 
 const toggleEstadoEmpleado = async (id: string, estadoActual: boolean) => {
   try { await updateDoc(doc(db, 'usuarios', id), { activo: !estadoActual }) }
-  catch { alert('Error al actualizar el estado.') }
+  catch { toast.error('No se pudo actualizar el estado.') }
 }
 
 const eliminarEmpleado = async (id: string, nombre: string) => {
-  if (!confirm(`¿Eliminar a "${nombre}"? Perderá el acceso inmediatamente.`)) return
+  const ok = await confirmDialog({
+    title: `Eliminar a "${nombre}"`,
+    message: 'Perderá el acceso inmediatamente.',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await deleteDoc(doc(db, 'usuarios', id)) }
-  catch { alert('Error al eliminar.') }
+  catch { toast.error('No se pudo eliminar.') }
 }
 
 // ── ACCIONES: FINANZAS ────────────────────────────────────────────
@@ -795,13 +846,19 @@ const guardarEdicionFactura = async () => {
       items: facturaEditando.value.items
     })
     mostrarModalEditarFactura.value = false
-  } catch { alert('Error al actualizar el ticket.') }
+  } catch { toast.error('No se pudo actualizar el ticket.') }
 }
 
 const eliminarFactura = async (id: string) => {
-  if (!confirm('¿Eliminar esta factura?')) return
+  const ok = await confirmDialog({
+    title: 'Eliminar esta factura',
+    message: 'Saldrá del cierre de caja del día.',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try { await deleteDoc(doc(db, `locales/${localId.value}/facturas`, id)) }
-  catch { alert('Error al eliminar.') }
+  catch { toast.error('No se pudo eliminar.') }
 }
 
 // ── EMOJI PICKER ──────────────────────────────────────────────────
@@ -809,6 +866,207 @@ const eliminarFactura = async (id: string) => {
 const onSelectEmojiCategoria = (e: any) => { nuevaCategoria.value.icono = e.i; mostrarSelectorCategoria.value = false }
 const onSelectEmojiProducto  = (e: any) => { nuevoProducto.value.icon  = e.i; mostrarSelectorProducto.value  = false }
 const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; mostrarSelectorZona.value      = false }
+
+// ── EXPORTAR EXCEL ────────────────────────────────────────────────
+
+const exportandoExcel = ref(false)
+
+const formatHora = (fecha: any) =>
+  fecha?.seconds
+    ? new Date(fecha.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : ''
+
+const exportarFacturasExcel = async () => {
+  if (facturasFiltradas.value.length === 0) {
+    return toast.info('No hay facturas para exportar en este día.')
+  }
+  exportandoExcel.value = true
+  try {
+    // Carga dinámica: solo se descarga la librería cuando se pulsa el botón.
+    const XLSX = await import('xlsx-js-style')
+    const { utils, writeFile } = XLSX
+
+    // ── Paleta y estilos reutilizables ────────────────────────────
+    // Usamos el color del negocio para el banner; si no está, el morado por defecto.
+    const acento = (configNegocio.value.colorAcento || '#4F46E5').replace('#', '').toUpperCase()
+
+    const styleTitle = {
+      font: { bold: true, sz: 16, color: { rgb: 'FFFFFF' } },
+      fill: { patternType: 'solid', fgColor: { rgb: acento } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    }
+    const styleSubtitle = {
+      font: { italic: true, sz: 11, color: { rgb: '475569' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    }
+    const styleHeader = {
+      font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } },
+      fill: { patternType: 'solid', fgColor: { rgb: '1E293B' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: {
+        top:    { style: 'thin', color: { rgb: 'CBD5E1' } },
+        bottom: { style: 'thin', color: { rgb: 'CBD5E1' } },
+        left:   { style: 'thin', color: { rgb: 'CBD5E1' } },
+        right:  { style: 'thin', color: { rgb: 'CBD5E1' } },
+      }
+    }
+    const borderThin = {
+      top:    { style: 'thin', color: { rgb: 'F1F5F9' } },
+      bottom: { style: 'thin', color: { rgb: 'F1F5F9' } },
+      left:   { style: 'thin', color: { rgb: 'F1F5F9' } },
+      right:  { style: 'thin', color: { rgb: 'F1F5F9' } },
+    }
+    const styleText  = { font: { sz: 10, color: { rgb: '0F172A' } }, alignment: { vertical: 'center' }, border: borderThin }
+    const styleCenter = { ...styleText, alignment: { horizontal: 'center', vertical: 'center' } }
+    const styleMoney = { ...styleText, alignment: { horizontal: 'right', vertical: 'center' }, numFmt: '#,##0.00 "€"' }
+    const styleInt    = { ...styleCenter, numFmt: '0' }
+    const styleLabelKpi = { ...styleText, font: { ...styleText.font, bold: true } }
+
+    // Helper: aplica un estilo a un rango rectangular de celdas (las crea si no existen)
+    const applyStyle = (ws: any, r1: number, c1: number, r2: number, c2: number, style: any) => {
+      for (let r = r1; r <= r2; r++) {
+        for (let c = c1; c <= c2; c++) {
+          const addr = utils.encode_cell({ r, c })
+          if (!ws[addr]) ws[addr] = { v: '', t: 's' }
+          ws[addr].s = { ...(ws[addr].s ?? {}), ...style }
+        }
+      }
+    }
+
+    const wb = utils.book_new()
+    const negocioNombre = configNegocio.value.nombreNegocio || 'EasyOrder'
+    const fechaLegible  = new Date(filtroFecha.value + 'T00:00:00').toLocaleDateString('es-ES', {
+      weekday: 'long', day: '2-digit', month: 'long', year: 'numeric'
+    })
+
+    // ══════════════════════════════════════════════════════════════
+    // HOJA 1 — RESUMEN
+    // ══════════════════════════════════════════════════════════════
+    {
+      const ws = utils.aoa_to_sheet([
+        ['Cierre de Caja'],                             // 0: título
+        [`${negocioNombre} — ${fechaLegible}`],         // 1: subtítulo
+        [],                                             // 2: separador
+        ['Total recaudado', totalVentas.value],         // 3
+        ['Efectivo',        totalEfectivo.value],       // 4
+        ['Tarjeta',         totalTarjeta.value],        // 5
+        ['Ticket medio',    ticketMedio.value],         // 6
+        ['Nº de pedidos',   numeroPedidos.value],       // 7
+      ])
+      ws['!cols']   = [{ wch: 28 }, { wch: 22 }]
+      ws['!rows']   = [{ hpt: 32 }, { hpt: 20 }]
+      ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 1 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: 1 } },
+      ]
+      applyStyle(ws, 0, 0, 0, 1, styleTitle)
+      applyStyle(ws, 1, 0, 1, 1, styleSubtitle)
+      applyStyle(ws, 3, 0, 7, 0, styleLabelKpi)
+      applyStyle(ws, 3, 1, 6, 1, styleMoney)
+      applyStyle(ws, 7, 1, 7, 1, styleInt)
+      utils.book_append_sheet(wb, ws, 'Resumen')
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // HOJA 2 — TICKETS (una fila por factura)
+    // ══════════════════════════════════════════════════════════════
+    {
+      const cols  = ['Hora', 'Mesa', 'Zona', 'Camarero', 'Método', 'Nº productos', 'Total']
+      const rows  = facturasFiltradas.value.map(f => [
+        formatHora(f.fecha),
+        f.mesaNumero,
+        f.zona || '',
+        f.usuarioNombre,
+        f.metodoPago,
+        (f.items ?? []).reduce((acc: number, i: any) => acc + (Number(i.cantidad) || 0), 0),
+        Number(f.total)
+      ])
+      const ws = utils.aoa_to_sheet([
+        ['Tickets del día'],
+        [`${negocioNombre} — ${fechaLegible}`],
+        [],
+        cols,
+        ...rows
+      ])
+      ws['!cols']   = [{ wch: 10 }, { wch: 8 }, { wch: 20 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 14 }]
+      ws['!rows']   = [{ hpt: 32 }, { hpt: 20 }, { hpt: 8 }, { hpt: 24 }]
+      ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: cols.length - 1 } },
+      ]
+      applyStyle(ws, 0, 0, 0, cols.length - 1, styleTitle)
+      applyStyle(ws, 1, 0, 1, cols.length - 1, styleSubtitle)
+      applyStyle(ws, 3, 0, 3, cols.length - 1, styleHeader)
+      // Datos: alineación según columna
+      const last = 3 + rows.length
+      applyStyle(ws, 4, 0, last, 0, styleCenter)  // Hora
+      applyStyle(ws, 4, 1, last, 1, styleCenter)  // Mesa
+      applyStyle(ws, 4, 2, last, 2, styleText)    // Zona
+      applyStyle(ws, 4, 3, last, 3, styleText)    // Camarero
+      applyStyle(ws, 4, 4, last, 4, styleCenter)  // Método
+      applyStyle(ws, 4, 5, last, 5, styleInt)     // Nº productos
+      applyStyle(ws, 4, 6, last, 6, styleMoney)   // Total
+      utils.book_append_sheet(wb, ws, 'Tickets')
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // HOJA 3 — DETALLE (una fila por línea)
+    // ══════════════════════════════════════════════════════════════
+    {
+      const cols = ['Hora', 'Mesa', 'Camarero', 'Producto', 'Cantidad', 'Precio Unit', 'Subtotal']
+      const rows: any[][] = []
+      for (const f of facturasFiltradas.value) {
+        const hora = formatHora(f.fecha)
+        for (const item of (f.items ?? [])) {
+          const subtotal = item.subtotal ?? (Number(item.precio) * Number(item.cantidad))
+          rows.push([
+            hora,
+            f.mesaNumero,
+            f.usuarioNombre,
+            item.nombre,
+            Number(item.cantidad),
+            Number(item.precio),
+            Number(subtotal)
+          ])
+        }
+      }
+      const ws = utils.aoa_to_sheet([
+        ['Detalle de productos vendidos'],
+        [`${negocioNombre} — ${fechaLegible}`],
+        [],
+        cols,
+        ...rows
+      ])
+      ws['!cols']   = [{ wch: 10 }, { wch: 8 }, { wch: 24 }, { wch: 32 }, { wch: 12 }, { wch: 16 }, { wch: 16 }]
+      ws['!rows']   = [{ hpt: 32 }, { hpt: 20 }, { hpt: 8 }, { hpt: 24 }]
+      ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: cols.length - 1 } },
+      ]
+      applyStyle(ws, 0, 0, 0, cols.length - 1, styleTitle)
+      applyStyle(ws, 1, 0, 1, cols.length - 1, styleSubtitle)
+      applyStyle(ws, 3, 0, 3, cols.length - 1, styleHeader)
+      const last = 3 + rows.length
+      applyStyle(ws, 4, 0, last, 0, styleCenter)
+      applyStyle(ws, 4, 1, last, 1, styleCenter)
+      applyStyle(ws, 4, 2, last, 2, styleText)
+      applyStyle(ws, 4, 3, last, 3, styleText)
+      applyStyle(ws, 4, 4, last, 4, styleInt)
+      applyStyle(ws, 4, 5, last, 5, styleMoney)
+      applyStyle(ws, 4, 6, last, 6, styleMoney)
+      utils.book_append_sheet(wb, ws, 'Detalle')
+    }
+
+    const slug = negocioNombre.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    writeFile(wb, `${slug}-cierre-${filtroFecha.value}.xlsx`)
+    toast.success('Excel descargado')
+  } catch (e) {
+    console.error('Export Excel:', e)
+    toast.error('No se pudo generar el Excel.')
+  } finally {
+    exportandoExcel.value = false
+  }
+}
 </script>
 
 <template>
@@ -858,6 +1116,14 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
           </div>
           <div class="controls">
             <input type="date" v-model="filtroFecha" class="input-date">
+            <button
+              class="btn-export-excel"
+              :disabled="exportandoExcel || facturasFiltradas.length === 0"
+              @click="exportarFacturasExcel"
+              title="Descargar las facturas filtradas como hoja Excel"
+            >
+              {{ exportandoExcel ? 'Generando...' : '📊 Exportar a Excel' }}
+            </button>
           </div>
         </div>
 
@@ -1269,9 +1535,10 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 
           <div class="lista-card">
             <h3 class="form-card-title">👁 Vista previa</h3>
-            <p class="form-hint" style="margin-bottom: 20px;">Así verán tu negocio los empleados en la aplicación.</p>
+            <p class="form-hint" style="margin-bottom: 20px;">Así se verá tu negocio en distintas pantallas con el color elegido.</p>
 
-            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 8px;">Sidebar camarero</p>
+            <!-- ── MOCK 1: Sidebar camarero ── -->
+            <p class="prev-label">Sidebar de sala</p>
             <div class="preview-sidebar">
               <div class="preview-brand" :style="{ borderBottomColor: configEditando.colorAcento }">
                 <img v-if="configEditando.logoUrl" :src="configEditando.logoUrl" class="preview-logo" alt="Logo" />
@@ -1290,15 +1557,59 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
               </div>
             </div>
 
-            <p style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin: 20px 0 8px;">Barra de cocina</p>
-            <div class="preview-cocina-bar">
+            <!-- ── MOCK 2: Pestañas de zona + mapa con mesas ── -->
+            <p class="prev-label">Mapa de sala</p>
+            <div class="prev-mapa">
+              <div class="prev-zona-tabs">
+                <span class="prev-zona-tab active" :style="{ background: configEditando.colorAcento }">🛋️ Salón</span>
+                <span class="prev-zona-tab">☀️ Terraza</span>
+                <span class="prev-zona-tab">🍺 Barra</span>
+              </div>
+              <div class="prev-mesas">
+                <div class="prev-mesa available">
+                  <span class="prev-mesa-num">1</span>
+                  <span class="prev-mesa-label">Libre</span>
+                </div>
+                <div class="prev-mesa occupied" :style="{ borderColor: configEditando.colorAcento }">
+                  <span class="prev-mesa-num" :style="{ color: configEditando.colorAcento }">2</span>
+                  <span class="prev-mesa-label" :style="{ color: configEditando.colorAcento }">Ocupada</span>
+                </div>
+                <div class="prev-mesa available">
+                  <span class="prev-mesa-num">3</span>
+                  <span class="prev-mesa-label">Libre</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── MOCK 3: Componentes UI (botones, badges) ── -->
+            <p class="prev-label">Botones y elementos UI</p>
+            <div class="prev-componentes">
+              <button class="prev-btn-primary" :style="{ background: configEditando.colorAcento }">Enviar a cocina</button>
+              <span class="prev-chip" :style="{ background: `${configEditando.colorAcento}18`, color: configEditando.colorAcento, borderColor: `${configEditando.colorAcento}40` }">
+                Activo
+              </span>
+              <span class="prev-precio" :style="{ color: configEditando.colorAcento }">12,50 €</span>
+            </div>
+
+            <!-- ── MOCK 4: Toast de confirmación ── -->
+            <p class="prev-label">Notificación de éxito</p>
+            <div class="prev-toast">
+              <span class="prev-toast-icon" :style="{ background: configEditando.colorAcento }">✓</span>
+              <div class="prev-toast-body">
+                <strong>Pedido enviado</strong>
+                <span>Mesa 4 — 3 productos</span>
+              </div>
+            </div>
+
+            <!-- ── MOCK 5: Barra de cocina ── -->
+            <p class="prev-label">Barra superior de cocina</p>
+            <div class="preview-cocina-bar" :style="{ borderBottomColor: configEditando.colorAcento }">
               <div class="preview-cocina-left">
                 <img v-if="configEditando.logoUrl" :src="configEditando.logoUrl" class="preview-logo-sm" alt="Logo" />
                 <div v-else class="preview-logo-sm-placeholder" :style="{ background: configEditando.colorAcento }">
                   {{ configEditando.nombreNegocio?.charAt(0) || '?' }}
                 </div>
                 <span class="preview-cocina-nombre">{{ configEditando.nombreNegocio || 'Tu negocio' }}</span>
-                <span class="preview-cocina-badge" :style="{ background: configEditando.colorAcento }">EasyOrder</span>
               </div>
               <span class="preview-cocina-role">Cocina</span>
             </div>
@@ -1598,6 +1909,26 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .input-num { width: 80px; text-align: center; }
 .input-date:focus, .input-num:focus, .input-select:focus { border-color: #4f46e5; }
 
+.btn-export-excel {
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.18s, transform 0.18s, box-shadow 0.18s;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(22, 163, 74, 0.25);
+}
+.btn-export-excel:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(22, 163, 74, 0.32);
+}
+.btn-export-excel:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* ── TABS ── */
 .tabs-zone-admin { display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 4px; align-items: center; }
 .tabs-zone-admin button { padding: 8px 18px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; font-weight: 600; cursor: pointer; color: #475569; transition: all 0.2s; white-space: nowrap; font-size: 0.9rem; }
@@ -1841,13 +2172,133 @@ const onSelectEmojiZona      = (e: any) => { nuevaZona.value.icono      = e.i; m
 .preview-nav { padding: 8px; display: flex; flex-direction: column; gap: 4px; background: #f8fafc; }
 .preview-nav-item { padding: 8px 12px; border-radius: 6px; color: white; font-size: 0.82rem; font-weight: 600; transition: background 0.3s; }
 .preview-nav-item-inactive { padding: 8px 12px; border-radius: 6px; color: #64748b; font-size: 0.82rem; }
-.preview-cocina-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-radius: 10px; background: #1e293b; }
+.preview-cocina-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-radius: 10px; background: #1e293b; border-bottom: 3px solid #4f46e5; transition: border-color 0.3s; }
 .preview-cocina-left { display: flex; align-items: center; gap: 10px; }
 .preview-logo-sm { width: 24px; height: 24px; object-fit: contain; border-radius: 4px; background: white; }
 .preview-logo-sm-placeholder { width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 0.75rem; flex-shrink: 0; transition: background 0.3s; }
 .preview-cocina-nombre { font-size: 0.9rem; font-weight: 700; color: #f1f5f9; }
 .preview-cocina-badge { font-size: 0.65rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; color: white; transition: background 0.3s; }
 .preview-cocina-role { font-size: 0.78rem; color: #64748b; font-weight: 600; }
+
+/* ── PREVIEWS extra (Mi Negocio) ── */
+.prev-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 18px 0 8px;
+}
+
+.prev-mapa {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.prev-zona-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  width: fit-content;
+}
+
+.prev-zona-tab {
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #64748b;
+  background: transparent;
+}
+
+.prev-zona-tab.active { color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+
+.prev-mesas { display: flex; gap: 12px; }
+
+.prev-mesa {
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+  background: white;
+  border: 2px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  position: relative;
+}
+
+.prev-mesa.available { border-color: #cbd5e1; }
+.prev-mesa.occupied { background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.04); }
+.prev-mesa-num { font-size: 1.4rem; font-weight: 900; color: #334155; line-height: 1; }
+.prev-mesa-label { font-size: 0.68rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+
+.prev-componentes {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.prev-btn-primary {
+  border: none;
+  color: white;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+}
+
+.prev-chip {
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid;
+}
+
+.prev-precio { font-size: 1.1rem; font-weight: 900; }
+
+.prev-toast {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  max-width: 320px;
+}
+
+.prev-toast-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 900;
+  font-size: 1rem;
+}
+
+.prev-toast-body { display: flex; flex-direction: column; gap: 2px; }
+.prev-toast-body strong { font-size: 0.88rem; color: #0f172a; }
+.prev-toast-body span { font-size: 0.76rem; color: #64748b; }
 
 /* ── MODALES ── */
 .modal-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,0.6); backdrop-filter: blur(4px); display: flex; justify-content: center; align-items: center; z-index: 1000; }

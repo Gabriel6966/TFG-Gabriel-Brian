@@ -5,6 +5,9 @@ import {
   deleteDoc, doc, updateDoc, query, where
 } from 'firebase/firestore'
 import { db } from '../../firebase'
+import { useNotify } from '../../composables/useNotify'
+
+const { toast, confirm: confirmDialog } = useNotify()
 
 // ── TIPOS ────────────────────────────────────────────────────────
 
@@ -274,7 +277,7 @@ const guardarTamanoElemento = async (id: string) => {
     })
     elementoSeleccionadoId.value = null
   } catch {
-    alert('Error al guardar el tamaño.')
+    toast.error('No se pudo guardar el tamaño.')
   } finally {
     guardandoElemento.value = false
   }
@@ -362,20 +365,27 @@ const guardarMesa = async (mesaId: string) => {
     })
     mesaTooltipId.value = null
   } catch {
-    alert('Error al actualizar la mesa.')
+    toast.error('No se pudo actualizar la mesa.')
   } finally {
     guardandoMesa.value = false
   }
 }
 
 const eliminarMesa = async (mesaId: string, mesaNr: number) => {
-  if (!props.localId || !confirm(`¿Eliminar la Mesa ${mesaNr}?`)) return
+  if (!props.localId) return
+  const ok = await confirmDialog({
+    title: `Eliminar la Mesa ${mesaNr}`,
+    message: 'Esta acción no se puede deshacer.',
+    confirmLabel: 'Eliminar',
+    variant: 'danger'
+  })
+  if (!ok) return
   try {
     await deleteDoc(doc(db, `locales/${props.localId}/mesas`, mesaId))
     mesaTooltipId.value = null
     delete localMesaPos.value[mesaId]
   } catch {
-    alert('Error al eliminar la mesa.')
+    toast.error('No se pudo eliminar la mesa.')
   }
 }
 

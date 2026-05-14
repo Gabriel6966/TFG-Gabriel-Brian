@@ -135,10 +135,10 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
           <button
             class="filter-pill"
             :class="{ active: filtroActivo === 'todas' }"
-            :style="filtroActivo === 'todas' ? { borderColor: colorAcento, color: colorAcento, background: `${colorAcento}10` } : {}"
+            :style="filtroActivo === 'todas' ? { borderColor: colorAcento, color: colorAcento, background: `${colorAcento}14` } : {}"
             @click="emit('cambiar-filtro', 'todas')"
           >
-            <span class="indicator" :style="filtroActivo === 'todas' ? { background: colorAcento } : { background: '#4f46e5' }"></span>
+            <span class="indicator" :style="{ background: colorAcento }"></span>
             Todas las mesas
           </button>
           <button
@@ -181,7 +181,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
   </button>
 
   <button class="btn-liberar-sidebar" @click="emit('abrir-modal-factura')">
-    ✓ Finalizar Servicio
+    💳 Cobrar mesa
   </button>
 </section>
 
@@ -213,7 +213,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .brand {
   padding-bottom: 14px;
-  border-bottom: 2px solid #4f46e5;
+  border-bottom: 2px solid var(--color-acento, #4f46e5);
   margin-bottom: 14px;
   transition: border-color 0.3s;
 }
@@ -394,15 +394,25 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 .filter-pill:hover { border-color: #cbd5e1; }
 
-.indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+/* Estado seleccionado para "Solo ocupadas" / "Solo disponibles".
+   La pill "Todas" lleva su propio estilo inline con el color del negocio. */
+.filter-pill.active:not([style]) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
 }
 
-.indicator.red   { border: 2px solid #dc2626; }
-.indicator.green { border: 2px solid #16a34a; }
+.indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-acento, #4f46e5);
+}
+
+.indicator.red   { background: #dc2626; box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2); }
+.indicator.green { background: #16a34a; box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2); }
 
 /* ACCIONES */
 .action-section {

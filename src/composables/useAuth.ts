@@ -84,26 +84,37 @@ export function useAuth() {
 
   const initAuthListener = () => {
     onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        const userDoc = await getDoc(doc(db, 'usuarios', user.uid))
-        if (userDoc.exists()) {
-          const userData = userDoc.data()
-          if (userData.activo === false) {
+      try {
+        if (user) {
+          const userDoc = await getDoc(doc(db, 'usuarios', user.uid))
+          if (userDoc.exists()) {
+            const userData = userDoc.data()
+            if (userData.activo === false) {
+              await signOut(auth)
+              return
+            }
+            currentUser.value = user
+            userRole.value = userData.rol
+            localId.value = userData.localId
+          } else {
             await signOut(auth)
-            return 
           }
-          currentUser.value = user
-          userRole.value = userData.rol
-          localId.value = userData.localId 
         } else {
-          await signOut(auth)
+          currentUser.value = null
+          userRole.value = null
+          localId.value = null
         }
-      } else {
+      } catch (error) {
+        // Si Firestore falla (offline, permisos), no podemos confiar en la sesión
+        // pero tampoco podemos dejar la app sin montarse: limpiamos estado y
+        // dejamos que el router redirija al login.
+        console.error('Error al sincronizar perfil de usuario:', error)
         currentUser.value = null
         userRole.value = null
         localId.value = null
+      } finally {
+        authReady.value = true
       }
-      authReady.value = true
     })
   }
 

@@ -1,48 +1,51 @@
-import {defineStore} from 'pinia'
-import {ref,computed} from 'vue'
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
 
-export const CartStore= defineStore('cart',()=>{
-    const currentTableID=ref<number | null>(null)
-    const items = ref<any[]>([])
+export interface CartItem {
+  id: string
+  name: string
+  price: number
+  quantity: number
+  notes: string
+  sirveCamarero?: boolean
+}
 
-    const totalItems = computed(()=>
-    items.value.reduce((acc,item)=>
-    acc + item.quantity,0))
+// Producto tal como llega de Firestore (sin quantity/notes).
+type Producto = Omit<CartItem, 'quantity' | 'notes'>
 
-    const totalPrice= computed(()=>{
-        return items.value.reduce((acc,item)=>acc+(item.price*item.quantity),0)
-    })
+export const CartStore = defineStore('cart', () => {
+  const currentTableID = ref<number | null>(null)
+  const items = ref<CartItem[]>([])
 
-    //Logic actions
-    const setTable = (tableId:number)=>{
-        currentTableID.value=tableId
+  const totalItems = computed(() =>
+    items.value.reduce((acc, item) => acc + item.quantity, 0)
+  )
+
+  const totalPrice = computed(() =>
+    items.value.reduce((acc, item) => acc + item.price * item.quantity, 0)
+  )
+
+  const setTable = (tableId: number) => {
+    currentTableID.value = tableId
+  }
+
+  const addToCart = (product: Producto) => {
+    const existItem = items.value.find(item => item.id === product.id)
+    if (existItem) {
+      existItem.quantity++
+    } else {
+      items.value.push({ ...product, quantity: 1, notes: '' })
     }
+  }
 
-    const addToCart=(product:any)=>{
-        const existItem = items.value.find(item=>
-            item.id===product.id
-        )
-        if(existItem){
-            existItem.quantity++
-        }else{
-            items.value.push({
-                ...product,
-                quantity:1,
-                notes:'' //Personalizated notes
-            })
-        }
-    }
+  const removeFromCart = (productId: string) => {
+    items.value = items.value.filter(item => item.id !== productId)
+  }
 
-    const removeFromCart =(productId:number)=>{
-        items.value=items.value.filter(item=>item.id!==productId)
-    }
-    
-    
-    const clear = ()=>{
-        items.value=[]
-        currentTableID.value=null
-    }
+  const clear = () => {
+    items.value = []
+    currentTableID.value = null
+  }
 
-    //Check to export all so others files can read values
-    return{items,currentTableID,totalItems,totalPrice,addToCart,setTable,clear,removeFromCart}
+  return { items, currentTableID, totalItems, totalPrice, addToCart, setTable, clear, removeFromCart }
 })

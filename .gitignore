@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Variables de entorno (claves Cloudinary, EmailJS, Firebase, App Check)
+.env
+.env.*
+!.env.example
+
+# Claude Code workspace
+.claude/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

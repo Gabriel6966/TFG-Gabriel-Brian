@@ -173,7 +173,7 @@ const emit = defineEmits(['enviar'])
     border-radius: 6px;
     font-size: 0.85rem;
     font-weight: 700;
-    color: #4f46e5;
+    color: var(--color-acento, #4f46e5);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     flex-shrink: 0;
 }
@@ -262,7 +262,7 @@ const emit = defineEmits(['enviar'])
 }
 
 .btn-primary:not(:disabled) {
-    background: #4f46e5;
+    background: var(--color-acento, #4f46e5);
     box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2);
 }
 

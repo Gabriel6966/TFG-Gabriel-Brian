@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
-  orderBy, doc, updateDoc, addDoc, Timestamp, getDoc
+  orderBy, doc, updateDoc, Timestamp, getDoc, writeBatch, runTransaction
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { CartStore } from '../stores/cart'
@@ -11,10 +11,12 @@ import { useNegocio } from '../composables/useNegocio'
 
 import PosSidebar from '../components/pos/PosSidebar.vue'
 import PosFloorMap from '../components/pos/PosFloorMap.vue'
+import { useNotify } from '../composables/useNotify'
 
 const cartStore = CartStore()
 const { currentUser, logout, localId } = useAuth()
 const { config: negocio, iniciar: iniciarNegocio, detener: detenerNegocio } = useNegocio()
+const { toast } = useNotify()
 
 const abrirCobroRapido = (id: string) => {
   mesaIdTicket.value = id
@@ -52,6 +54,13 @@ const filtroActivo = ref('todas')
 const mostrarModalCarta = ref(false)
 const mostrarModalCamarero = ref(false)
 const hayProductosCamarero = ref(false)
+
+// IDs de items del carrito con el campo de nota expandido
+const notasExpandidas = ref<Set<string>>(new Set())
+const toggleNota = (itemId: string) => {
+  if (notasExpandidas.value.has(itemId)) notasExpandidas.value.delete(itemId)
+  else notasExpandidas.value.add(itemId)
+}
 
 // Modal Ticket
 const mostrarModalTicket = ref(false)
@@ -147,7 +156,7 @@ const comandasCamarero = computed(() =>
   )
 )
 
-const servirComandaCamarero = async (comandaId: string, mesaId: string) => {
+const servirComandaCamarero = async (comandaId: string, _mesaId: string) => {
   if (!localId.value) return
   try {
     await updateDoc(doc(db, `locales/${localId.value}/comandas`, comandaId), {
@@ -161,24 +170,24 @@ const servirComandaCamarero = async (comandaId: string, mesaId: string) => {
 
 const servirLineaCamarero = async (comanda: any, lineaIndex: string | number) => {
   if (!localId.value) return
+  const ref = doc(db, `locales/${localId.value}/comandas`, comanda.id)
   try {
-    const lineasEntregadas: Record<string, boolean> = { ...(comanda.lineasEntregadas ?? {}) }
-    lineasEntregadas[String(lineaIndex)] = true
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return
+      const data = snap.data()
+      if (data.estado === 'entregado' || data.estado === 'pagado') return
 
-    const todasEntregadas = comanda.lineas.every((_: any, i: number) =>
-      lineasEntregadas[String(i)] === true
-    )
+      const lineasEntregadas: Record<string, boolean> = { ...(data.lineasEntregadas ?? {}) }
+      lineasEntregadas[String(lineaIndex)] = true
 
-    if (todasEntregadas) {
-      await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
-        estado: 'entregado',
-        lineasEntregadas
-      })
-    } else {
-      await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
-        lineasEntregadas
-      })
-    }
+      const lineas = (data.lineas ?? []) as any[]
+      const todasEntregadas = lineas.every((_, i) => lineasEntregadas[String(i)] === true)
+
+      tx.update(ref, todasEntregadas
+        ? { estado: 'entregado', lineasEntregadas }
+        : { lineasEntregadas })
+    })
     recalcularHayAlgoListo()
   } catch (error) {
     console.error('Error al servir línea:', error)
@@ -288,10 +297,18 @@ onMounted(() => {
         estadoLineasAnterior.value[c.id] = { ...(c.estadoLineas ?? {}) }
       })
 
-      // Limpiamos ids que ya no existen
+      // Limpiamos ids que ya no existen en el listener (comandas pagadas,
+      // entregadas y luego sacadas del filtro, etc.).
       const idsActivos = new Set(nuevasComandas.map((c: any) => c.id))
       for (const id of comandasNotificadas.value) {
         if (!idsActivos.has(id)) comandasNotificadas.value.delete(id)
+      }
+      for (const clave of lineasNotificadas.value) {
+        const comandaId = clave.split('_')[0]
+        if (!idsActivos.has(comandaId)) lineasNotificadas.value.delete(clave)
+      }
+      for (const id of Object.keys(estadoLineasAnterior.value)) {
+        if (!idsActivos.has(id)) delete estadoLineasAnterior.value[id]
       }
     }
 
@@ -433,6 +450,7 @@ const abrirCartaPedido = () => {
 
 const cerrarCartaPedido = () => {
   mostrarModalCarta.value = false
+  notasExpandidas.value.clear()
 }
 
 const actualizarPosicionMesa = (id: string, x: number, y: number) => {
@@ -477,14 +495,17 @@ const abrirModalFactura = () => {
 const guardarCopiaYFinalizar = async () => {
   if (!mesaIdTicket.value || !localId.value || !currentUser.value) return
   const mesaALiberar = tables.value.find(t => t.id === mesaIdTicket.value)
-  if (!mesaALiberar) return alert('Seleccione una mesa válida.')
+  if (!mesaALiberar) return toast.warning('Seleccione una mesa válida.')
   const consumoTotal = cuentaFinalMesa.value
 
   try {
     const usuarioDoc = await getDoc(doc(db, 'usuarios', currentUser.value.uid))
     const usuarioNombre = usuarioDoc.exists() ? usuarioDoc.data().nombre : currentUser.value.email
 
-    await addDoc(collection(db, `locales/${localId.value}/facturas`), {
+    const batch = writeBatch(db)
+    const facturasRef = collection(db, `locales/${localId.value}/facturas`)
+
+    batch.set(doc(facturasRef), {
       mesaId: mesaIdTicket.value,
       mesaNumero: mesaALiberar.nr,
       zona: mesaALiberar.zona || 'Sin zona',
@@ -505,10 +526,12 @@ const guardarCopiaYFinalizar = async () => {
 
     const comandasDeLaMesa = comandasActivas.value.filter(c => c.mesaId === mesaIdTicket.value)
     for (const c of comandasDeLaMesa) {
-      await updateDoc(doc(db, `locales/${localId.value}/comandas`, c.id), { estado: 'pagado' })
+      batch.update(doc(db, `locales/${localId.value}/comandas`, c.id), { estado: 'pagado' })
     }
 
-    await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaALiberar.id), { estado: 'libre' })
+    batch.update(doc(db, `locales/${localId.value}/mesas`, mesaALiberar.id), { estado: 'libre' })
+
+    await batch.commit()
 
     if (mesaSeleccionadaId.value === mesaIdTicket.value) {
       cartStore.clear()
@@ -518,15 +541,15 @@ const guardarCopiaYFinalizar = async () => {
 
     mesaIdTicket.value = null
     mostrarModalTicket.value = false
-    alert('Cobro registrado y mesa liberada.')
+    toast.success('Cobro registrado', 'Mesa liberada correctamente.')
   } catch (error) {
     console.error('Error al cobrar:', error)
-    alert('Error al procesar el cobro.')
+    toast.error('No se pudo procesar el cobro', 'Inténtalo de nuevo.')
   }
 }
 
 const enviarPedido = async () => {
-  if (cartStore.items.length === 0) return alert('El pedido está vacío')
+  if (cartStore.items.length === 0) return toast.warning('El pedido está vacío')
   if (!mesaSeleccionadaId.value || !currentUser.value || !localId.value) return
 
   isEnviando.value = true
@@ -551,9 +574,11 @@ const enviarPedido = async () => {
       fechaDia: new Date().toISOString().split('T')[0],
     }
 
-    // Comanda para cocina
+    const batch = writeBatch(db)
+    const comandasRef = collection(db, `locales/${localId.value}/comandas`)
+
     if (lineasCocina.length > 0) {
-      await addDoc(collection(db, `locales/${localId.value}/comandas`), {
+      batch.set(doc(comandasRef), {
         ...baseComanda,
         estado: 'en_cocina',
         destino: 'cocina',
@@ -568,9 +593,8 @@ const enviarPedido = async () => {
       })
     }
 
-    // Comanda para camarero
     if (lineasCamarero.length > 0) {
-      await addDoc(collection(db, `locales/${localId.value}/comandas`), {
+      batch.set(doc(comandasRef), {
         ...baseComanda,
         estado: 'para_camarero',
         destino: 'camarero',
@@ -585,17 +609,20 @@ const enviarPedido = async () => {
       })
     }
 
-    await updateDoc(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
+    batch.update(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
       estado: 'preparando'
     })
 
+    await batch.commit()
+
     cartStore.clear()
+    notasExpandidas.value.clear()
     mostrarModalCarta.value = false
     mesaSeleccionada.value = null
     mesaSeleccionadaId.value = null
   } catch (error) {
     console.error('Error al enviar la comanda:', error)
-    alert('Error al enviar el pedido.')
+    toast.error('No se pudo enviar el pedido', 'Comprueba tu conexión e inténtalo de nuevo.')
   } finally {
     isEnviando.value = false
   }
@@ -615,25 +642,49 @@ const cerrarMonitor = () => {
 
 const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) => {
   if (!localId.value) return
+  const ref = doc(db, `locales/${localId.value}/comandas`, comanda.id)
+  let pasoAEntregada = false
   try {
-    const estadoLineas = { ...(comanda.estadoLineas ?? {}) }
-    const lineasEntregadas: Record<string, boolean> = { ...(comanda.lineasEntregadas ?? {}) }
-    lineasEntregadas[String(lineaIndex)] = true
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return
+      const data = snap.data()
+      if (data.estado === 'entregado' || data.estado === 'pagado') return
 
-    await updateDoc(doc(db, `locales/${localId.value}/comandas`, comanda.id), {
-      lineasEntregadas
+      const estadoLineas = (data.estadoLineas ?? {}) as Record<string, boolean>
+      const lineasEntregadas: Record<string, boolean> = { ...(data.lineasEntregadas ?? {}) }
+      lineasEntregadas[String(lineaIndex)] = true
+
+      const lineas = (data.lineas ?? []) as any[]
+      const todasEntregadas = lineas.every((_, i) => {
+        const estaLista = estadoLineas[String(i)] === true
+        return !estaLista || lineasEntregadas[String(i)] === true
+      })
+
+      if (todasEntregadas && data.estado === 'listo') {
+        tx.update(ref, { estado: 'entregado', lineasEntregadas })
+        pasoAEntregada = true
+      } else {
+        tx.update(ref, { lineasEntregadas })
+      }
     })
 
-    const todasEntregadas = comanda.lineas.every((_: any, i: number) => {
-      const estaLista = estadoLineas[String(i)] === true
-      return !estaLista || lineasEntregadas[String(i)] === true
-    })
-
-    if (todasEntregadas && comanda.estado === 'listo') {
-      await marcarComoEntregada(comanda.id, comanda.mesaId)
-    } else {
-      recalcularHayAlgoListo()
+    if (pasoAEntregada) {
+      // Replicamos los efectos de marcarComoEntregada (liberar mesa si no quedan
+      // pendientes, limpiar notificaciones) sin reescribir 'estado' de nuevo.
+      const quedanPendientes = comandasActivas.value.some(
+        c => c.mesaId === comanda.mesaId && c.id !== comanda.id &&
+        c.estado !== 'entregado' && c.estado !== 'listo'
+      )
+      if (!quedanPendientes) {
+        await updateDoc(doc(db, `locales/${localId.value}/mesas`, comanda.mesaId), { estado: 'ocupada' })
+      }
+      comandasNotificadas.value.delete(comanda.id)
+      for (const clave of lineasNotificadas.value) {
+        if (clave.startsWith(`${comanda.id}_`)) lineasNotificadas.value.delete(clave)
+      }
     }
+    recalcularHayAlgoListo()
   } catch (error) {
     console.error('Error al marcar línea como entregada:', error)
   }
@@ -777,13 +828,36 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
               </div>
 
               <div v-else class="summary-items">
-                <div v-for="item in cartStore.items" :key="item.id" class="summary-item">
-                  <span class="summary-qty">{{ item.quantity }}</span>
-                  <div>
-                    <strong>{{ item.name }}</strong>
-                    <small>{{ (item.price * item.quantity).toFixed(2) }}€</small>
+                <div v-for="item in cartStore.items" :key="item.id" class="summary-item-wrap">
+                  <div class="summary-item">
+                    <span class="summary-qty">{{ item.quantity }}</span>
+                    <div class="summary-info">
+                      <strong>{{ item.name }}</strong>
+                      <small>{{ (item.price * item.quantity).toFixed(2) }}€</small>
+                    </div>
+                    <button
+                      class="btn-nota"
+                      :class="{ active: item.notes || notasExpandidas.has(item.id) }"
+                      :title="item.notes ? 'Editar nota' : 'Añadir nota'"
+                      @click="toggleNota(item.id)"
+                    >
+                      📝
+                    </button>
+                    <button class="btn-remove" @click="cartStore.removeFromCart(item.id)">✕</button>
                   </div>
-                  <button @click="cartStore.removeFromCart(item.id)">✕</button>
+                  <div v-if="notasExpandidas.has(item.id)" class="summary-nota-row">
+                    <input
+                      type="text"
+                      class="summary-nota-input"
+                      v-model="item.notes"
+                      placeholder="Ej: sin cebolla, bien hecho..."
+                      maxlength="120"
+                      @keyup.enter="toggleNota(item.id)"
+                    >
+                  </div>
+                  <div v-else-if="item.notes" class="summary-nota-preview" @click="toggleNota(item.id)">
+                    ⚠ {{ item.notes }}
+                  </div>
                 </div>
               </div>
 
@@ -922,7 +996,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                   :class="{ 'comanda-lista': comanda.estado === 'listo' }"
                 >
                   <div class="c-header">
-                    <span class="c-time">🕐 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() }}</span>
+                    <span class="c-time">🕐 {{ comanda.fechaHora?.seconds ? new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString() : '--:--' }}</span>
                     <span class="c-status" :class="comanda.estado.toLowerCase().replace(/[\s_]+/g, '-')">
                       {{ comanda.estado.replace(/_/g, ' ').toUpperCase() }}
                     </span>
@@ -996,7 +1070,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                     <span class="camarero-zona">{{ comanda.zona }}</span>
                   </div>
                   <span class="camarero-hora">
-                    🕐 {{ new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
+                    🕐 {{ comanda.fechaHora?.seconds ? new Date(comanda.fechaHora.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--' }}
                   </span>
                 </div>
 
@@ -1086,7 +1160,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .tabs-zone button.active {
-  background: #4f46e5;
+  background: var(--color-acento, #4f46e5);
   color: white;
   box-shadow: 0 2px 4px rgba(79,70,229,0.2);
 }
@@ -1298,15 +1372,21 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   gap: 10px;
 }
 
-.summary-item {
-  display: grid;
-  grid-template-columns: 32px minmax(0,1fr) 30px;
-  align-items: center;
-  gap: 10px;
+.summary-item-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px;
   border: 1px solid #f1f5f9;
   border-radius: 12px;
   background: #f8fafc;
+}
+
+.summary-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0,1fr) 30px 30px;
+  align-items: center;
+  gap: 8px;
 }
 
 .summary-qty {
@@ -1315,13 +1395,59 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   border-radius: 8px;
   background: white;
   display: flex; align-items: center; justify-content: center;
-  color: #4f46e5;
+  color: var(--color-acento, #4f46e5);
   font-weight: 900;
 }
 
+.summary-info { min-width: 0; }
 .summary-item strong { display: block; color: #0f172a; font-size: 0.88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .summary-item small  { color: #64748b; font-weight: 800; }
-.summary-item button { width: 28px; height: 28px; border-radius: 50%; border: none; background: #fee2e2; color: #dc2626; cursor: pointer; font-weight: 900; }
+
+.btn-nota {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: none; background: #e0e7ff; color: #4338ca;
+  cursor: pointer; font-size: 0.85rem;
+  transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.btn-nota:hover { background: #c7d2fe; }
+.btn-nota.active { background: #fef3c7; color: #b45309; box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.25); }
+
+.btn-remove {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: none; background: #fee2e2; color: #dc2626;
+  cursor: pointer; font-weight: 900;
+}
+
+.summary-nota-row { display: flex; }
+.summary-nota-input {
+  flex: 1;
+  border: 1px solid #fde68a;
+  background: white;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.summary-nota-input:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.18);
+}
+
+.summary-nota-preview {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #b45309;
+  background: #fef3c7;
+  border-left: 3px solid #d97706;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  word-break: break-word;
+}
+.summary-nota-preview:hover { background: #fde68a; }
 
 .summary-footer { padding: 20px; border-top: 1px solid #e2e8f0; }
 
@@ -1483,8 +1609,11 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .c-status { font-size: 0.8rem; font-weight: 800; padding: 4px 10px; border-radius: 20px; }
-.c-status.en-cocina { background: #fef3c7; color: #b45309; }
-.c-status.listo     { background: #dcfce7; color: #16a34a; }
+.c-status.en-cocina     { background: #fef3c7; color: #b45309; }
+.c-status.listo         { background: #dcfce7; color: #16a34a; }
+.c-status.para-camarero { background: #fed7aa; color: #c2410c; }
+.c-status.entregado     { background: #e0e7ff; color: #4338ca; }
+.c-status.pagado        { background: #f1f5f9; color: #64748b; }
 
 .c-lines {
   list-style: none;

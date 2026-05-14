@@ -326,7 +326,6 @@ const stopDrag = () => {
           <div v-if="mesaSeleccionada === table.nr" class="floating-card" @mousedown.stop>
             <div class="fc-header">
               <div class="fc-title-group">
-                <span class="fc-icon">M</span>
                 <h4>Mesa {{ table.nr }}</h4>
               </div>
               <span class="fc-badge" :class="table.status">

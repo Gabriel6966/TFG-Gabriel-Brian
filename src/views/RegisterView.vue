@@ -2,10 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { createUserWithEmailAndPassword } from 'firebase/auth'
-import {
-  collection, query, where, getDocs,
-  doc, setDoc, updateDoc
-} from 'firebase/firestore'
+import { doc, getDoc, writeBatch } from 'firebase/firestore'
 import { auth, db } from '../firebase'
 import { useAuth } from '../composables/useAuth'
 
@@ -48,25 +45,19 @@ const verificarCodigo = async () => {
   errorCodigo.value = ''
 
   try {
-    // Consultamos la colección invitaciones buscando el código exacto
-    const q = query(
-      collection(db, 'invitaciones'),
-      where('codigo', '==', codigoInvitacion.value.trim().toUpperCase()),
-      where('estado', '==', 'pendiente')
-    )
-    const snapshot = await getDocs(q)
+    // El código ES el ID del documento. Así /register necesita solo permiso
+    // de `get` (no de `list`), y no se pueden enumerar códigos pendientes.
+    const codigo = codigoInvitacion.value.trim().toUpperCase()
+    const docSnap = await getDoc(doc(db, 'invitaciones', codigo))
 
-    if (snapshot.empty) {
+    if (!docSnap.exists() || docSnap.data().estado !== 'pendiente') {
       errorCodigo.value = 'Código inválido o ya utilizado. Contacta con tu administrador.'
       return
     }
 
-    // Guardamos los datos de la invitación para usarlos en el paso 2
-    const docSnap = snapshot.docs[0]
     invitacionId.value = docSnap.id
     invitacionData.value = docSnap.data() as typeof invitacionData.value
 
-    // Avanzamos al paso 2
     paso.value = 2
 
   } catch (error) {
@@ -101,25 +92,32 @@ const completarRegistro = async () => {
       password.value
     )
 
-    // 2. Creamos su perfil en Firestore /usuarios/{uid}
-    //    Vinculamos al local mediante localId (arquitectura multitenant)
-    await setDoc(doc(db, 'usuarios', credential.user.uid), {
-      nombre: nombre.value.trim(),
-      email: invitacionData.value.email,
-      rol: invitacionData.value.rol,
-      localId: invitacionData.value.localId,
-      activo: true,
-      creadoEn: new Date()
-    })
+    // 2. Perfil + invitación en un batch atómico. Si la escritura falla
+    //    revertimos el auth user con credential.user.delete() para que el
+    //    empleado pueda reintentar; sin esto quedaría un orphan en Auth y
+    //    el siguiente intento daría `auth/email-already-in-use`.
+    try {
+      const batch = writeBatch(db)
+      batch.set(doc(db, 'usuarios', credential.user.uid), {
+        nombre: nombre.value.trim(),
+        email: invitacionData.value.email,
+        rol: invitacionData.value.rol,
+        localId: invitacionData.value.localId,
+        activo: true,
+        creadoEn: new Date()
+      })
+      batch.update(doc(db, 'invitaciones', invitacionId.value), {
+        estado: 'usada',
+        usadoPor: credential.user.uid,
+        usadoEn: new Date()
+      })
+      await batch.commit()
+    } catch (firestoreError) {
+      try { await credential.user.delete() } catch { /* sesión perdida; el rollback no es posible */ }
+      throw firestoreError
+    }
 
-    // 3. Marcamos la invitación como usada — no se puede reutilizar
-    await updateDoc(doc(db, 'invitaciones', invitacionId.value), {
-      estado: 'usada',
-      usadoPor: credential.user.uid,
-      usadoEn: new Date()
-    })
-
-    // 4. Iniciamos sesión con el composable para que el estado global
+    // 3. Iniciamos sesión con el composable para que el estado global
     //    se actualice correctamente (userRole, localId, etc.)
     await login(invitacionData.value.email, password.value)
 

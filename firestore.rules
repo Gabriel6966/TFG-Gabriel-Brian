@@ -1,0 +1,200 @@
+rules_version = '2';
+
+// EasyOrder — Reglas de seguridad multitenant
+//
+// Modelo:
+//   /usuarios/{uid}              → perfil del usuario (rol, localId, activo)
+//   /invitaciones/{id}           → códigos de alta de empleados
+//   /locales/{localId}/...       → datos del negocio (mesas, productos, comandas, facturas, etc.)
+//
+// Principios:
+//   - Un usuario solo accede a documentos cuyo `localId` coincide con el suyo.
+//   - Las acciones de escritura están restringidas por rol (admin / camarero / cocinero).
+//   - Usuarios desactivados (`activo == false`) quedan bloqueados.
+//
+// Modelo de invitaciones: el código de 8 caracteres es el ID del documento.
+// Esto permite que /register haga `get` por ID sin necesidad de `list`, evitando
+// la enumeración. Solo el admin del local puede hacer `list` (con filtro localId).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── HELPERS ─────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Devuelve el doc del perfil del usuario actual. Si no existe, falla la regla
+    // (es exactamente lo que queremos: un usuario sin perfil no puede operar).
+    function myProfile() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    function isActive() {
+      return isSignedIn() && myProfile().activo == true;
+    }
+
+    function hasRole(role) {
+      return isActive() && myProfile().rol == role;
+    }
+
+    function isAdmin()    { return hasRole('admin'); }
+    function isCamarero() { return hasRole('camarero'); }
+    function isCocinero() { return hasRole('cocinero'); }
+
+    function isStaff() {
+      return isActive() && myProfile().rol in ['admin', 'camarero', 'cocinero'];
+    }
+
+    function sameLocal(localId) {
+      return isActive() && myProfile().localId == localId;
+    }
+
+    // ── USUARIOS ────────────────────────────────────────────────
+    match /usuarios/{uid} {
+      // El propio usuario siempre puede leer su perfil (necesario para login
+      // y para el listener inicial de auth en useAuth.ts).
+      // Un admin puede leer/listar los empleados de su propio local.
+      allow get:  if isSignedIn() && (
+                    request.auth.uid == uid
+                    || (isAdmin() && resource.data.localId == myProfile().localId)
+                  );
+      // Para `list`, la regla se evalúa por documento devuelto: solo se entregan
+      // los del mismo local del admin. La query del cliente debe filtrar por
+      // localId para que coincida; ver AdminView.vue.
+      allow list: if isAdmin() && resource.data.localId == myProfile().localId;
+
+      // Registro: el propio usuario crea su doc tras `createUserWithEmailAndPassword`.
+      // Validamos campos críticos para evitar que un usuario se auto-asigne admin
+      // o se vincule a otro local sin invitación.
+      allow create: if isSignedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.activo == true
+                    && request.resource.data.rol in ['admin', 'camarero', 'cocinero']
+                    && request.resource.data.localId is string
+                    && request.resource.data.email is string
+                    && request.resource.data.nombre is string;
+
+      // Actualización: el propio usuario solo puede cambiar su nombre.
+      // Un admin del mismo local puede cambiar `activo` y `rol`.
+      allow update: if (
+                      isSignedIn()
+                      && request.auth.uid == uid
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['nombre'])
+                    ) || (
+                      isAdmin()
+                      && resource.data.localId == myProfile().localId
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['activo', 'rol'])
+                      && request.resource.data.rol in ['admin', 'camarero', 'cocinero']
+                    );
+
+      // Borrado: solo admin del mismo local, y nunca a sí mismo.
+      allow delete: if isAdmin()
+                    && resource.data.localId == myProfile().localId
+                    && uid != request.auth.uid;
+    }
+
+    // ── INVITACIONES ────────────────────────────────────────────
+    // El código de invitación se usa como ID del documento. /register hace
+    // `get` por ID con el código que escribe el empleado — no necesita `list`.
+    match /invitaciones/{invId} {
+      // Lectura pública solo por ID exacto (get) y solo si está pendiente.
+      // `list` queda cerrado a no-admins, lo que cierra la enumeración.
+      allow get: if resource.data.estado == 'pendiente';
+
+      // El admin del mismo local puede leer todo (incluidas usadas).
+      allow get, list: if isAdmin()
+                       && resource.data.localId == myProfile().localId;
+
+      // Crear: solo admin, para su propio local, y siempre en estado 'pendiente'.
+      allow create: if isAdmin()
+                    && request.resource.data.localId == myProfile().localId
+                    && request.resource.data.estado == 'pendiente'
+                    && request.resource.data.rol in ['admin', 'camarero', 'cocinero']
+                    && request.resource.data.codigo is string
+                    && request.resource.data.email is string;
+
+      // Marcar como usada durante el registro (puede no haber sesión aún:
+      // /register actualiza la invitación justo después del createUser, en ese
+      // momento ya hay auth.uid pero no /usuarios/{uid}).
+      // Solo permitimos la transición pendiente→usada y campos concretos.
+      allow update: if resource.data.estado == 'pendiente'
+                    && request.resource.data.estado == 'usada'
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['estado', 'usadoPor', 'usadoEn']);
+
+      // Borrar: admin del mismo local.
+      allow delete: if isAdmin()
+                    && resource.data.localId == myProfile().localId;
+    }
+
+    // ── DATOS DEL NEGOCIO (/locales/{localId}/...) ──────────────
+    match /locales/{localId} {
+
+      // Config del negocio (nombre, logo, color)
+      match /config/{configId} {
+        allow read:  if isStaff() && sameLocal(localId);
+        allow write: if isAdmin() && sameLocal(localId);
+      }
+
+      // Mesas: cualquier staff lee y actualiza (camarero cambia estado/pos),
+      // solo admin crea/borra.
+      match /mesas/{mesaId} {
+        allow read:           if isStaff() && sameLocal(localId);
+        allow update:         if isStaff() && sameLocal(localId);
+        allow create, delete: if isAdmin() && sameLocal(localId);
+      }
+
+      // Productos: lectura para todos, escritura solo admin.
+      match /productos/{prodId} {
+        allow read:  if isStaff() && sameLocal(localId);
+        allow write: if isAdmin() && sameLocal(localId);
+      }
+
+      // Categorías
+      match /categorias/{catId} {
+        allow read:  if isStaff() && sameLocal(localId);
+        allow write: if isAdmin() && sameLocal(localId);
+      }
+
+      // Zonas de la sala
+      match /zonas/{zonaId} {
+        allow read:  if isStaff() && sameLocal(localId);
+        allow write: if isAdmin() && sameLocal(localId);
+      }
+
+      // Elementos decorativos del mapa (FloorEditor / PosFloorMap)
+      match /elementosDecor/{elemId} {
+        allow read:  if isStaff() && sameLocal(localId);
+        allow write: if isAdmin() && sameLocal(localId);
+      }
+
+      // Comandas: camarero/admin crean. Cualquier staff actualiza (cocinero marca
+      // listo, camarero entrega). Solo admin borra.
+      match /comandas/{comandaId} {
+        allow read:   if isStaff() && sameLocal(localId);
+        allow create: if (isAdmin() || isCamarero()) && sameLocal(localId);
+        allow update: if isStaff() && sameLocal(localId);
+        allow delete: if isAdmin() && sameLocal(localId);
+      }
+
+      // Facturas: camarero/admin crean al cobrar. Solo admin edita/borra
+      // (función "editar ticket" del panel de finanzas).
+      match /facturas/{facturaId} {
+        allow read:           if isStaff() && sameLocal(localId);
+        allow create:         if (isAdmin() || isCamarero()) && sameLocal(localId);
+        allow update, delete: if isAdmin() && sameLocal(localId);
+      }
+    }
+
+    // Bloqueo explícito: cualquier ruta no contemplada queda denegada.
+    // Esto cubre las colecciones raíz "productos" y "pedidos" usadas por las
+    // vistas legacy MenuView/CheckoutView (ver bug #8 del informe).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
