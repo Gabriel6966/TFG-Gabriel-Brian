@@ -197,7 +197,7 @@ service cloud.firestore {
         allow create:         if (isAdmin() || isCamarero()) && sameLocal(localId);
         allow update, delete: if isAdmin() && sameLocal(localId);
       }
-
+      
       // Reservas: cualquier staff crea y lee; staff puede cambiar estado
       // (confirmar, cancelar, marcar cumplida). Solo admin borra.
       match /reservas/{reservaId} {

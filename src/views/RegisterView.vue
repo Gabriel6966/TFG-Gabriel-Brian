@@ -647,4 +647,27 @@ h2 {
     overflow-y: auto;
   }
 }
+
+/* Móvil pequeño: compacta marca, indicador de pasos y formulario.
+   Aplica a paso 1 (código) y paso 2 (datos), que comparten estilos. */
+@media (max-width: 560px) {
+  .brand-section { flex: 0.32; padding: 22px 16px; }
+  .logo-text { font-size: 2.3rem; margin-bottom: 4px; }
+  .subtitle { font-size: 0.85rem; margin-bottom: 16px; }
+  .steps-visual { margin-top: 6px; }
+  .step-circle { width: 30px; height: 30px; font-size: 0.82rem; }
+  .step span { font-size: 0.72rem; }
+  .step-line { width: 44px; margin-bottom: 22px; }
+
+  .premium-glass { padding: 26px 22px; margin-top: -26px; max-height: calc(100vh - 32%); }
+  .card-header { margin-bottom: 20px; }
+  h2 { font-size: 1.35rem; }
+  .form-subtitle { font-size: 0.85rem; }
+  .input-group { margin-bottom: 14px; }
+  .input-group label { font-size: 0.82rem; }
+  .input-group input,
+  .codigo-input { padding: 11px 14px; }
+  .invitacion-info { padding: 12px 14px; margin-bottom: 16px; }
+  .btn-primary { height: 46px; font-size: 0.95rem; }
+}
 </style>

@@ -735,24 +735,25 @@ h2 {
   }
 }
 
-/* Móvil pequeño: se compacta todo y se oculta el showcase decorativo
-   (órbitas + isotipo) — el wordmark ya identifica la marca y el tilt 3D
-   no funciona en táctil, así que en el móvil solo ocupaba espacio. */
+/* Móvil pequeño: se compacta todo manteniendo el logo visible. */
 @media (max-width: 560px) {
-  .brand-section { flex: none; padding: 26px 16px 34px; }
-  .logo-showcase { display: none; }
-  .wordmark-image { width: min(72%, 260px); }
-  .brand-mark { margin-bottom: 4px; }
-  .subtitle { font-size: 0.9rem; margin-bottom: 0; }
+  .brand-section { padding: 20px 16px; }
+  .brand-mark { margin-bottom: 2px; }
+  .wordmark-image { width: min(64%, 230px); }
+  .subtitle { font-size: 0.84rem; margin-bottom: 12px; }
+  .logo-showcase { width: min(60%, 195px); }
+  .logo-panel { min-height: 124px; }
+  .logo-icon-image { width: min(100%, 112px); }
 
-  .premium-glass { padding: 28px 22px; margin-top: -24px; }
-  .card-header { margin-bottom: 22px; }
-  h2 { font-size: 1.4rem; }
-  .form-subtitle { font-size: 0.86rem; }
-  .input-group { margin-bottom: 15px; }
+  .form-section { overflow-y: auto; }
+  .premium-glass { padding: 26px 22px; margin-top: -24px; }
+  .card-header { margin-bottom: 20px; }
+  h2 { font-size: 1.35rem; }
+  .form-subtitle { font-size: 0.85rem; }
+  .input-group { margin-bottom: 14px; }
   .input-group label { font-size: 0.82rem; }
-  .input-wrapper input { padding: 12px 14px; font-size: 0.92rem; }
-  .form-extras { margin-bottom: 20px; }
-  .btn-primary { height: 48px; font-size: 0.95rem; }
+  .input-wrapper input { padding: 11px 14px; font-size: 0.92rem; }
+  .form-extras { margin-bottom: 18px; }
+  .btn-primary { height: 46px; font-size: 0.95rem; }
 }
 </style>
