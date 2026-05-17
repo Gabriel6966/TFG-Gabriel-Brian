@@ -745,8 +745,18 @@ h2 {
   .logo-panel { min-height: 124px; }
   .logo-icon-image { width: min(100%, 112px); }
 
-  .form-section { overflow-y: auto; }
-  .premium-glass { padding: 26px 22px; margin-top: -24px; }
+  /* El card blanco se estira hasta abajo y centra su contenido —
+     `safe center` evita recortar arriba si el contenido no cabe. */
+  .form-section { align-items: stretch; }
+  .premium-glass {
+    padding: 26px 22px;
+    margin-top: -24px;
+    max-width: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: safe center;
+  }
   .card-header { margin-bottom: 20px; }
   h2 { font-size: 1.35rem; }
   .form-subtitle { font-size: 0.85rem; }

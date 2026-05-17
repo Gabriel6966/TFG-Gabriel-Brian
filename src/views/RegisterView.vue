@@ -659,7 +659,19 @@ h2 {
   .step span { font-size: 0.72rem; }
   .step-line { width: 44px; margin-bottom: 22px; }
 
-  .premium-glass { padding: 26px 22px; margin-top: -26px; max-height: calc(100vh - 32%); }
+  /* El card blanco se estira hasta abajo y centra su contenido —
+     `safe center` evita recortar arriba si el contenido no cabe. */
+  .form-section { align-items: stretch; }
+  .premium-glass {
+    padding: 26px 22px;
+    margin-top: -26px;
+    max-width: 100%;
+    max-height: none;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: safe center;
+  }
   .card-header { margin-bottom: 20px; }
   h2 { font-size: 1.35rem; }
   .form-subtitle { font-size: 0.85rem; }
