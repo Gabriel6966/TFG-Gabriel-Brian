@@ -16,7 +16,6 @@ $files = @(
     "src/utils/iva.ts",
     # Componentes POS
     "src/components/pos/PosFloorMap.vue",
-    "src/components/pos/PosOrderPanel.vue",
     "src/components/pos/PosSidebar.vue",
     "src/components/pos/FloorEditor.vue",
     # Componentes comunes
