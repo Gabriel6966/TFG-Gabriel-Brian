@@ -59,7 +59,7 @@ const handleLogin = async () => {
   errorMsg.value = ''
 
   try {
-    // NUEVO: Le pasamos rememberMe.value como tercer parámetro
+    // El tercer parámetro (rememberMe) controla la persistencia de la sesión.
     const role = await login(email.value, password.value, rememberMe.value)
 
     if (role === 'admin') router.replace('/admin')

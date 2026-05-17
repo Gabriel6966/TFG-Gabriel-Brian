@@ -202,7 +202,7 @@ const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
     <span v-if="hayAlgoListo" class="badge-punto"></span>
   </button>
 
-  <!-- NUEVO botón panel camarero -->
+  <!-- Botón del panel de camarero (bebidas pendientes de servir) -->
   <button
     class="btn-camarero-sidebar"
     :class="{ 'camarero-alerta': hayProductosCamarero }"

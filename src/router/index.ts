@@ -1,6 +1,5 @@
-// src/router/index.ts
 import { createRouter, createWebHistory } from 'vue-router'
-import { watch } from 'vue' // NUEVO: Importamos watch para vigilar a Firebase
+import { watch } from 'vue'
 import { useAuth } from '../composables/useAuth'
 
 declare module 'vue-router' {
@@ -54,8 +53,8 @@ const router = createRouter({
 const { currentUser, userRole, authReady } = useAuth()
 
 /**
- * NUEVO: Esta promesa pausa la ejecución del router hasta que 
- * Firebase confirme si el usuario tiene una sesión activa guardada o no.
+ * Pausa la ejecución del router hasta que Firebase confirme si hay una
+ * sesión activa guardada. Evita el parpadeo de redirección al login.
  */
 const waitForAuthReady = () => {
   return new Promise<void>((resolve) => {
@@ -76,7 +75,7 @@ const waitForAuthReady = () => {
 
 // Convertimos el beforeEach en asíncrono (async)
 router.beforeEach(async (to) => {
-  // 🛑 El router se detiene aquí hasta que Firebase cargue
+  // El router espera aquí a que Firebase confirme la sesión.
   await waitForAuthReady()
 
   // A partir de aquí, el router ya actúa con la información real de la sesión

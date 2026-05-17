@@ -1,13 +1,12 @@
-// src/composables/useAuth.ts
 import { ref } from 'vue'
 import {
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
   sendPasswordResetEmail,
-  setPersistence, // NUEVO
-  browserLocalPersistence, // NUEVO
-  browserSessionPersistence, // NUEVO
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
   type User
 } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
@@ -22,10 +21,10 @@ const authReady = ref(false)
 
 export function useAuth() {
 
-  // NUEVO: Añadimos el parámetro rememberMe (por defecto false)
   const login = async (email: string, password: string, rememberMe: boolean = false) => {
     try {
-      // 🛑 NUEVO: Configuramos la persistencia ANTES de iniciar sesión
+      // La persistencia se fija antes del login: con rememberMe la sesión
+      // sobrevive al cierre del navegador; sin él, dura solo la pestaña actual.
       const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence
       await setPersistence(auth, persistenceType)
 
