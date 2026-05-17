@@ -3487,4 +3487,38 @@ const exportarFacturasExcel = async () => {
   .kpi-grid { grid-template-columns: 1fr; }
   .finanzas-filtros { flex-direction: column; }
 }
+
+/* Móvil: la barra lateral fija pasa a barra superior de pestañas en
+   horizontal, para que el contenido disponga de todo el ancho. */
+@media (max-width: 760px) {
+  .admin-layout { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .sidebar-brand { display: none; }
+  .sidebar-nav { flex-direction: row; gap: 6px; overflow-x: auto; }
+  .sidebar-nav button {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 0.82rem;
+  }
+  .sidebar-footer {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding-top: 0;
+    border-top: none;
+    flex-shrink: 0;
+  }
+  .sidebar-powered { display: none; }
+  .btn-logout { width: auto; white-space: nowrap; padding: 8px 12px; font-size: 0.8rem; }
+  .content { height: auto; min-height: 0; padding: 16px 14px; }
+}
 </style>
