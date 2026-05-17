@@ -40,8 +40,13 @@ let clockInterval: ReturnType<typeof setInterval> | null = null
 
 // ── COMPUTED ──────────────────────────────────────────────────────
 
-const enCocina = computed(() => comandas.value.filter(c => c.estado === 'en_cocina'))
-const listas   = computed(() => comandas.value.filter(c => c.estado === 'listo'))
+// Ordena por antigüedad: la comanda que lleva más tiempo esperando va primera
+// (en el grid cae arriba-izquierda). Así cocina ataca siempre lo más urgente.
+const porAntiguedad = (lista: Comanda[]) =>
+  [...lista].sort((a, b) => (a.fechaHora?.seconds ?? 0) - (b.fechaHora?.seconds ?? 0))
+
+const enCocina = computed(() => porAntiguedad(comandas.value.filter(c => c.estado === 'en_cocina')))
+const listas   = computed(() => porAntiguedad(comandas.value.filter(c => c.estado === 'listo')))
 const colorAcento = computed(() => negocio.value.colorAcento || '#4f46e5')
 
 // ── AUDIO ─────────────────────────────────────────────────────────

@@ -150,8 +150,17 @@ service cloud.firestore {
 
       // Productos: lectura para todos, escritura solo admin.
       match /productos/{prodId} {
-        allow read:  if isStaff() && sameLocal(localId);
-        allow write: if isAdmin() && sameLocal(localId);
+        allow read: if isStaff() && sameLocal(localId);
+        allow create, delete: if isAdmin() && sameLocal(localId);
+        // Update: el admin puede editar cualquier campo; el resto del personal
+        // solo el `stock` (descuento de inventario al registrar un pedido).
+        // Así un camarero no puede alterar precio, nombre, etc.
+        allow update: if sameLocal(localId) && (
+                        isAdmin()
+                        || (isStaff()
+                            && request.resource.data.diff(resource.data)
+                                 .affectedKeys().hasOnly(['stock']))
+                      );
       }
 
       // Categorías

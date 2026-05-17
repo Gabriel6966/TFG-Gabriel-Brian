@@ -12,8 +12,11 @@ import FloorEditor from '../components/pos/FloorEditor.vue'
 import PoweredByEasyOrder from '../components/branding/PoweredByEasyOrder.vue'
 import emailjs from '@emailjs/browser'
 import { useNotify } from '../composables/useNotify'
+import { useReservaNotify } from '../composables/useReservaNotify'
+import { desglosarIva, TIPO_IVA_PCT } from '../utils/iva'
 
 const { toast, confirm: confirmDialog } = useNotify()
+const { enviarEmailReserva, linkWhatsAppReserva } = useReservaNotify()
 
 // ── INTERFACES ────────────────────────────────────────────────────
 
@@ -36,6 +39,7 @@ interface Producto {
   icon: string
   imageUrl?: string
   sirveCamarero?: boolean
+  stock?: number
 }
 
 interface Categoria {
@@ -81,6 +85,9 @@ interface Factura {
   usuarioNombre: string
   metodoPago: 'efectivo' | 'tarjeta'
   total: number
+  base?: number
+  iva?: number
+  tipoIva?: number
   fechaDia: string
   fecha: any
   items: any[]
@@ -90,6 +97,7 @@ interface Reserva {
   id: string
   nombre: string
   telefono?: string
+  email?: string
   personas: number
   fechaHora: any
   fechaDia: string
@@ -134,6 +142,7 @@ const filtroEstadoReserva = ref<'todas' | 'pendiente' | 'confirmada' | 'cancelad
 const nuevaReserva = ref({
   nombre: '',
   telefono: '',
+  email: '',
   personas: 2,
   fecha: new Date().toISOString().split('T')[0],
   hora: '20:00',
@@ -146,6 +155,7 @@ const reservaEditandoId = ref<string | null>(null)
 const reservaEditando = ref({
   nombre: '',
   telefono: '',
+  email: '',
   personas: 2,
   fecha: '',
   hora: '',
@@ -172,7 +182,8 @@ const nuevoProducto = ref({
   category: '',
   icon: '🍽️',
   imageUrl: '',
-  sirveCamarero: false
+  sirveCamarero: false,
+  stock: 0
 })
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
 const editandoProductoId = ref<string | null>(null)
@@ -181,6 +192,10 @@ const nuevaZona = ref({ nombre: '', icono: '🛋️' })
 const nuevaInvitacion = ref({ email: '', rol: 'camarero' as 'admin' | 'camarero' | 'cocinero' })
 const facturaEditando = ref<Partial<Factura>>({})
 const facturaSeleccionada = ref<Factura | null>(null)
+// Desglose de IVA de la factura abierta en el modal de detalle.
+const desgloseFacturaSel = computed(() =>
+  desglosarIva(facturaSeleccionada.value?.total ?? 0)
+)
 const nuevoItemSeleccionado = ref('')
 const subiendoFotoProducto = ref(false)
 const subiendoFotoCategoria = ref(false)
@@ -227,6 +242,8 @@ const totalEfectivo = computed(() => facturas.value.filter(f => f.metodoPago ===
 const totalTarjeta = computed(() => facturas.value.filter(f => f.metodoPago === 'tarjeta').reduce((acc, f) => acc + f.total, 0))
 const numeroPedidos = computed(() => facturas.value.length)
 const ticketMedio = computed(() => numeroPedidos.value > 0 ? (totalVentas.value / numeroPedidos.value) : 0)
+// Desglose de IVA del total recaudado (los precios ya incluyen IVA).
+const desgloseCaja = computed(() => desglosarIva(totalVentas.value))
 
 const ventasPorEmpleado = computed(() => {
   const mapa = new Map<string, { nombre: string, total: number, pedidos: number }>()
@@ -690,7 +707,8 @@ const resetProductoForm = () => {
     category: categorias.value[0]?.nombre ?? '',
     icon: '🍽️',
     imageUrl: '',
-    sirveCamarero: false
+    sirveCamarero: false,
+    stock: 0
   }
 }
 
@@ -702,7 +720,8 @@ const editarProducto = (producto: Producto) => {
     category: producto.category,
     icon: producto.icon,
     imageUrl: producto.imageUrl || '',
-    sirveCamarero: producto.sirveCamarero ?? false
+    sirveCamarero: producto.sirveCamarero ?? false,
+    stock: Number(producto.stock) || 0
   }
 }
 
@@ -740,7 +759,8 @@ const guardarProducto = async () => {
       category: nuevoProducto.value.category,
       icon: nuevoProducto.value.icon || '🍽️',
       imageUrl: nuevoProducto.value.imageUrl || '',
-      sirveCamarero: nuevoProducto.value.sirveCamarero
+      sirveCamarero: nuevoProducto.value.sirveCamarero,
+      stock: Math.max(0, Math.floor(Number(nuevoProducto.value.stock) || 0))
     }
     if (editandoProductoId.value) {
       await updateDoc(doc(db, `locales/${localId.value}/productos`, editandoProductoId.value), payload)
@@ -761,6 +781,60 @@ const eliminarProducto = async (id: string, nombre: string) => {
   if (!ok) return
   try { await deleteDoc(doc(db, `locales/${localId.value}/productos`, id)) }
   catch { toast.error('No se pudo eliminar.') }
+}
+
+// ── INVENTARIO ────────────────────────────────────────────────────
+
+// Valores de stock en edición, indexados por id de producto. Se rellenan
+// desde la lista real, sin pisar lo que el admin esté escribiendo.
+const stockEdit = ref<Record<string, number>>({})
+watch(productos, (lista) => {
+  for (const p of lista) {
+    if (!(p.id in stockEdit.value)) stockEdit.value[p.id] = Number(p.stock) || 0
+  }
+}, { immediate: true, deep: true })
+
+const filtroInventario = ref('')
+const productosInventario = computed(() => {
+  const q = filtroInventario.value.trim().toLowerCase()
+  const lista = q
+    ? productos.value.filter(p => p.name.toLowerCase().includes(q))
+    : productos.value
+  return [...lista].sort((a, b) => a.name.localeCompare(b.name))
+})
+
+// Estadísticas de cabecera.
+const productosAgotados = computed(() =>
+  productos.value.filter(p => (Number(p.stock) || 0) <= 0).length
+)
+const productosStockBajo = computed(() =>
+  productos.value.filter(p => { const s = Number(p.stock) || 0; return s > 0 && s <= 5 }).length
+)
+
+// Estado de un producto: agotado / bajo / ok — para colorear.
+const estadoStock = (p: Producto) => {
+  const s = Number(p.stock) || 0
+  return s <= 0 ? 'cero' : s <= 5 ? 'bajo' : 'ok'
+}
+
+// Una fila tiene cambios sin guardar si el valor editado difiere del real.
+const stockSinGuardar = (p: Producto) => stockEdit.value[p.id] !== (Number(p.stock) || 0)
+
+const ajustarStockEdit = (id: string, delta: number) => {
+  const actual = Number(stockEdit.value[id]) || 0
+  stockEdit.value[id] = Math.max(0, actual + delta)
+}
+
+const guardarStock = async (p: Producto) => {
+  if (!localId.value) return
+  const nuevo = Math.max(0, Math.floor(Number(stockEdit.value[p.id]) || 0))
+  try {
+    await updateDoc(doc(db, `locales/${localId.value}/productos`, p.id), { stock: nuevo })
+    stockEdit.value[p.id] = nuevo
+    toast.success('Stock actualizado', `${p.name}: ${nuevo} unidades.`)
+  } catch {
+    toast.error('No se pudo actualizar el stock.')
+  }
 }
 
 // ── ACCIONES: INVITACIONES ────────────────────────────────────────
@@ -900,8 +974,13 @@ const agregarItemTicket = () => {
 const guardarEdicionFactura = async () => {
   if (!localId.value || !facturaEditando.value.id) return
   try {
+    // Si cambia el total, el desglose de IVA guardado debe recalcularse.
+    const d = desglosarIva(Number(facturaEditando.value.total) || 0)
     await updateDoc(doc(db, `locales/${localId.value}/facturas`, facturaEditando.value.id), {
       total: facturaEditando.value.total,
+      base: d.base,
+      iva: d.iva,
+      tipoIva: d.tipo,
       metodoPago: facturaEditando.value.metodoPago,
       items: facturaEditando.value.items
     })
@@ -979,10 +1058,17 @@ const buscarConflictoReserva = async (
   return conflicto ? { id: conflicto.id, ...conflicto.data() } as any : null
 }
 
+// Valida un email con un patrón básico. Sirve tanto para crear como editar.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 const crearReserva = async () => {
   if (!localId.value) return
   const nombre = nuevaReserva.value.nombre.trim()
+  const telefono = nuevaReserva.value.telefono.trim()
+  const email = nuevaReserva.value.email.trim()
   if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (!telefono && !email) return toast.warning('Indica un email o un teléfono de contacto.')
+  if (email && !EMAIL_RE.test(email)) return toast.warning('El email no tiene un formato válido.')
   if (nuevaReserva.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
   if (!nuevaReserva.value.fecha || !nuevaReserva.value.hora) return toast.warning('Fecha y hora son obligatorias.')
 
@@ -1007,23 +1093,41 @@ const crearReserva = async () => {
       }
     }
 
+    const personas = Number(nuevaReserva.value.personas)
+    const notas = nuevaReserva.value.notas.trim()
     await addDoc(collection(db, `locales/${localId.value}/reservas`), {
       nombre,
-      telefono: nuevaReserva.value.telefono.trim() || '',
-      personas: Number(nuevaReserva.value.personas),
+      telefono,
+      email,
+      personas,
       fechaHora: Timestamp.fromDate(fechaHora),
       fechaDia: nuevaReserva.value.fecha,
       mesaId: nuevaReserva.value.mesaId || '',
-      notas: nuevaReserva.value.notas.trim() || '',
+      notas,
       estado: 'pendiente',
       creadoEn: Timestamp.now()
     })
     nuevaReserva.value = {
-      nombre: '', telefono: '', personas: 2,
+      nombre: '', telefono: '', email: '', personas: 2,
       fecha: nuevaReserva.value.fecha, hora: '20:00',
       mesaId: '', notas: ''
     }
-    toast.success('Reserva creada')
+
+    // Email de confirmación: si falla, la reserva ya está creada — solo avisamos.
+    if (email) {
+      try {
+        const enviado = await enviarEmailReserva(
+          { nombre, email, telefono, personas, fechaHora, notas },
+          configNegocio.value.nombreNegocio || 'EasyOrder'
+        )
+        if (enviado) toast.success('Reserva creada', 'Email de confirmación enviado al cliente.')
+        else toast.success('Reserva creada')
+      } catch {
+        toast.warning('Reserva creada', 'Pero no se pudo enviar el email de confirmación.')
+      }
+    } else {
+      toast.success('Reserva creada')
+    }
   } catch (e) {
     console.error(e)
     toast.error('No se pudo crear la reserva.')
@@ -1047,6 +1151,7 @@ const abrirEditarReserva = (r: Reserva) => {
   reservaEditando.value = {
     nombre: r.nombre,
     telefono: r.telefono ?? '',
+    email: r.email ?? '',
     personas: r.personas,
     fecha: r.fechaDia,
     hora: fechaHora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -1059,7 +1164,11 @@ const abrirEditarReserva = (r: Reserva) => {
 const guardarEdicionReserva = async () => {
   if (!localId.value || !reservaEditandoId.value) return
   const nombre = reservaEditando.value.nombre.trim()
+  const telefono = reservaEditando.value.telefono.trim()
+  const email = reservaEditando.value.email.trim()
   if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (!telefono && !email) return toast.warning('Indica un email o un teléfono de contacto.')
+  if (email && !EMAIL_RE.test(email)) return toast.warning('El email no tiene un formato válido.')
   if (reservaEditando.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
   if (!reservaEditando.value.fecha || !reservaEditando.value.hora) return toast.warning('Fecha y hora son obligatorias.')
 
@@ -1087,7 +1196,8 @@ const guardarEdicionReserva = async () => {
 
     await updateDoc(doc(db, `locales/${localId.value}/reservas`, reservaEditandoId.value), {
       nombre,
-      telefono: reservaEditando.value.telefono.trim() || '',
+      telefono,
+      email,
       personas: Number(reservaEditando.value.personas),
       fechaHora: Timestamp.fromDate(fechaHora),
       fechaDia: reservaEditando.value.fecha,
@@ -1119,14 +1229,81 @@ const eliminarReserva = async (id: string) => {
   }
 }
 
-// ── EXPORTAR EXCEL ────────────────────────────────────────────────
+// Abre WhatsApp con el mensaje de confirmación ya redactado (envío manual).
+const avisarWhatsApp = (r: Reserva) => {
+  const fecha = r.fechaHora?.toDate
+    ? r.fechaHora.toDate()
+    : new Date((r.fechaHora?.seconds ?? 0) * 1000)
+  const link = linkWhatsAppReserva(
+    { nombre: r.nombre, telefono: r.telefono, personas: r.personas, fechaHora: fecha, notas: r.notas },
+    configNegocio.value.nombreNegocio || 'EasyOrder'
+  )
+  if (!link) return toast.info('Esta reserva no tiene teléfono.')
+  window.open(link, '_blank', 'noopener')
+}
+
+// ── EXPORTAR (Excel / CSV) ────────────────────────────────────────
 
 const exportandoExcel = ref(false)
+const mostrarMenuExport = ref(false)
 
 const formatHora = (fecha: any) =>
   fecha?.seconds
     ? new Date(fecha.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : ''
+
+// Nombre de fichero seguro a partir del nombre del negocio.
+const slugNegocio = () =>
+  (configNegocio.value.nombreNegocio || 'EasyOrder')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'easyorder'
+
+// Despacha según el formato elegido en el menú desplegable.
+const exportarFacturas = (formato: 'excel' | 'csv') => {
+  mostrarMenuExport.value = false
+  if (formato === 'excel') exportarFacturasExcel()
+  else exportarFacturasCSV()
+}
+
+// CSV plano de los tickets del día. Separador ';' y BOM para que Excel
+// en español lo abra directo en columnas y respete los acentos.
+const exportarFacturasCSV = () => {
+  if (facturasFiltradas.value.length === 0) {
+    return toast.info('No hay facturas para exportar en este día.')
+  }
+  try {
+    const cols = ['Hora', 'Mesa', 'Zona', 'Camarero', 'Método', 'Nº productos', 'Base (€)', `IVA ${TIPO_IVA_PCT}% (€)`, 'Total (€)']
+    const filas = facturasFiltradas.value.map(f => {
+      const d = desglosarIva(Number(f.total))
+      return [
+        formatHora(f.fecha),
+        f.mesaNumero,
+        f.zona || '',
+        f.usuarioNombre,
+        f.metodoPago,
+        (f.items ?? []).reduce((acc: number, i: any) => acc + (Number(i.cantidad) || 0), 0),
+        d.base.toFixed(2),
+        d.iva.toFixed(2),
+        d.total.toFixed(2)
+      ]
+    })
+    const esc = (v: any) => {
+      const s = String(v ?? '')
+      return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const csv = [cols, ...filas].map(fila => fila.map(esc).join(';')).join('\r\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${slugNegocio()}-cierre-${filtroFecha.value}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('CSV descargado')
+  } catch (e) {
+    console.error('Export CSV:', e)
+    toast.error('No se pudo generar el CSV.')
+  }
+}
 
 const exportarFacturasExcel = async () => {
   if (facturasFiltradas.value.length === 0) {
@@ -1199,11 +1376,13 @@ const exportarFacturasExcel = async () => {
         ['Cierre de Caja'],                             // 0: título
         [`${negocioNombre} — ${fechaLegible}`],         // 1: subtítulo
         [],                                             // 2: separador
-        ['Total recaudado', totalVentas.value],         // 3
-        ['Efectivo',        totalEfectivo.value],       // 4
-        ['Tarjeta',         totalTarjeta.value],        // 5
-        ['Ticket medio',    ticketMedio.value],         // 6
-        ['Nº de pedidos',   numeroPedidos.value],       // 7
+        ['Total recaudado',          totalVentas.value],      // 3
+        [`Base imponible`,           desgloseCaja.value.base], // 4
+        [`IVA (${TIPO_IVA_PCT}%)`,   desgloseCaja.value.iva],  // 5
+        ['Efectivo',                 totalEfectivo.value],    // 6
+        ['Tarjeta',                  totalTarjeta.value],     // 7
+        ['Ticket medio',             ticketMedio.value],      // 8
+        ['Nº de pedidos',            numeroPedidos.value],    // 9
       ])
       ws['!cols']   = [{ wch: 28 }, { wch: 22 }]
       ws['!rows']   = [{ hpt: 32 }, { hpt: 20 }]
@@ -1213,9 +1392,9 @@ const exportarFacturasExcel = async () => {
       ]
       applyStyle(ws, 0, 0, 0, 1, styleTitle)
       applyStyle(ws, 1, 0, 1, 1, styleSubtitle)
-      applyStyle(ws, 3, 0, 7, 0, styleLabelKpi)
-      applyStyle(ws, 3, 1, 6, 1, styleMoney)
-      applyStyle(ws, 7, 1, 7, 1, styleInt)
+      applyStyle(ws, 3, 0, 9, 0, styleLabelKpi)
+      applyStyle(ws, 3, 1, 8, 1, styleMoney)
+      applyStyle(ws, 9, 1, 9, 1, styleInt)
       utils.book_append_sheet(wb, ws, 'Resumen')
     }
 
@@ -1223,16 +1402,21 @@ const exportarFacturasExcel = async () => {
     // HOJA 2 — TICKETS (una fila por factura)
     // ══════════════════════════════════════════════════════════════
     {
-      const cols  = ['Hora', 'Mesa', 'Zona', 'Camarero', 'Método', 'Nº productos', 'Total']
-      const rows  = facturasFiltradas.value.map(f => [
-        formatHora(f.fecha),
-        f.mesaNumero,
-        f.zona || '',
-        f.usuarioNombre,
-        f.metodoPago,
-        (f.items ?? []).reduce((acc: number, i: any) => acc + (Number(i.cantidad) || 0), 0),
-        Number(f.total)
-      ])
+      const cols  = ['Hora', 'Mesa', 'Zona', 'Camarero', 'Método', 'Nº productos', 'Base', `IVA (${TIPO_IVA_PCT}%)`, 'Total']
+      const rows  = facturasFiltradas.value.map(f => {
+        const d = desglosarIva(Number(f.total))
+        return [
+          formatHora(f.fecha),
+          f.mesaNumero,
+          f.zona || '',
+          f.usuarioNombre,
+          f.metodoPago,
+          (f.items ?? []).reduce((acc: number, i: any) => acc + (Number(i.cantidad) || 0), 0),
+          d.base,
+          d.iva,
+          d.total
+        ]
+      })
       const ws = utils.aoa_to_sheet([
         ['Tickets del día'],
         [`${negocioNombre} — ${fechaLegible}`],
@@ -1240,7 +1424,7 @@ const exportarFacturasExcel = async () => {
         cols,
         ...rows
       ])
-      ws['!cols']   = [{ wch: 10 }, { wch: 8 }, { wch: 20 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 14 }]
+      ws['!cols']   = [{ wch: 10 }, { wch: 8 }, { wch: 20 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }]
       ws['!rows']   = [{ hpt: 32 }, { hpt: 20 }, { hpt: 8 }, { hpt: 24 }]
       ws['!merges'] = [
         { s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } },
@@ -1257,7 +1441,9 @@ const exportarFacturasExcel = async () => {
       applyStyle(ws, 4, 3, last, 3, styleText)    // Camarero
       applyStyle(ws, 4, 4, last, 4, styleCenter)  // Método
       applyStyle(ws, 4, 5, last, 5, styleInt)     // Nº productos
-      applyStyle(ws, 4, 6, last, 6, styleMoney)   // Total
+      applyStyle(ws, 4, 6, last, 6, styleMoney)   // Base
+      applyStyle(ws, 4, 7, last, 7, styleMoney)   // IVA
+      applyStyle(ws, 4, 8, last, 8, styleMoney)   // Total
       utils.book_append_sheet(wb, ws, 'Tickets')
     }
 
@@ -1309,8 +1495,7 @@ const exportarFacturasExcel = async () => {
       utils.book_append_sheet(wb, ws, 'Detalle')
     }
 
-    const slug = negocioNombre.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
-    writeFile(wb, `${slug}-cierre-${filtroFecha.value}.xlsx`)
+    writeFile(wb, `${slugNegocio()}-cierre-${filtroFecha.value}.xlsx`)
     toast.success('Excel descargado')
   } catch (e) {
     console.error('Export Excel:', e)
@@ -1344,6 +1529,7 @@ const exportarFacturasExcel = async () => {
         <button :class="{ active: currentTab === 'mesas' }"     @click="currentTab = 'mesas'">🪑 Sala</button>
         <button :class="{ active: currentTab === 'reservas' }"  @click="currentTab = 'reservas'">📅 Reservas</button>
         <button :class="{ active: currentTab === 'productos' }" @click="currentTab = 'productos'">🍔 Menú</button>
+        <button :class="{ active: currentTab === 'inventario' }" @click="currentTab = 'inventario'">📦 Inventario</button>
         <button :class="{ active: currentTab === 'usuarios' }"  @click="currentTab = 'usuarios'">👥 Empleados</button>
         <button :class="{ active: currentTab === 'negocio' }"   @click="currentTab = 'negocio'">🏢 Mi Negocio</button>
       </nav>
@@ -1369,14 +1555,24 @@ const exportarFacturasExcel = async () => {
           </div>
           <div class="controls">
             <input type="date" v-model="filtroFecha" class="input-date">
-            <button
-              class="btn-export-excel"
-              :disabled="exportandoExcel || facturasFiltradas.length === 0"
-              @click="exportarFacturasExcel"
-              title="Descargar las facturas filtradas como hoja Excel"
-            >
-              {{ exportandoExcel ? 'Generando...' : '📊 Exportar a Excel' }}
-            </button>
+            <div class="export-dropdown">
+              <button
+                class="btn-export-excel"
+                :disabled="exportandoExcel || facturasFiltradas.length === 0"
+                @click="mostrarMenuExport = !mostrarMenuExport"
+                title="Descargar las facturas filtradas"
+              >
+                {{ exportandoExcel ? 'Generando...' : '⬇ Exportar' }}
+                <span class="export-caret">▾</span>
+              </button>
+              <template v-if="mostrarMenuExport">
+                <div class="export-backdrop" @click="mostrarMenuExport = false"></div>
+                <div class="export-menu">
+                  <button @click="exportarFacturas('excel')">📊 Excel (.xlsx)</button>
+                  <button @click="exportarFacturas('csv')">📄 CSV (.csv)</button>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
 
@@ -1396,6 +1592,14 @@ const exportarFacturasExcel = async () => {
           <div class="kpi-card">
             <span class="kpi-title">📊 Ticket Medio</span>
             <span class="kpi-value">{{ ticketMedio.toFixed(2) }} €</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">🧾 Base Imponible</span>
+            <span class="kpi-value">{{ desgloseCaja.base.toFixed(2) }} €</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-title">🏛️ IVA ({{ TIPO_IVA_PCT }}%)</span>
+            <span class="kpi-value">{{ desgloseCaja.iva.toFixed(2) }} €</span>
           </div>
         </div>
 
@@ -1539,6 +1743,10 @@ const exportarFacturasExcel = async () => {
                 <input type="number" v-model="nuevoProducto.price" step="0.01" min="0">
               </div>
               <div class="field-group">
+                <label>Stock inicial (unidades)</label>
+                <input type="number" v-model.number="nuevoProducto.stock" step="1" min="0">
+              </div>
+              <div class="field-group">
                 <label>Categoría</label>
                 <select v-model="nuevoProducto.category">
                   <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">{{ cat.icono }} {{ cat.nombre }}</option>
@@ -1636,6 +1844,58 @@ const exportarFacturasExcel = async () => {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ TAB: INVENTARIO ══ -->
+      <div v-if="currentTab === 'inventario'">
+        <div class="page-header">
+          <div>
+            <h1>Inventario</h1>
+            <p class="page-subtitle">
+              {{ productos.length }} producto{{ productos.length !== 1 ? 's' : '' }}
+              · <span class="inv-stat bajo">{{ productosStockBajo }} con stock bajo</span>
+              · <span class="inv-stat cero">{{ productosAgotados }} agotado{{ productosAgotados !== 1 ? 's' : '' }}</span>
+            </p>
+          </div>
+          <div class="controls">
+            <input v-model="filtroInventario" class="input-date" placeholder="🔍 Buscar producto..." style="width: 220px;">
+          </div>
+        </div>
+
+        <div v-if="productos.length === 0" class="empty-state-box">
+          No hay productos todavía. Créalos en la pestaña Menú.
+        </div>
+
+        <div v-else class="lista-card">
+          <div v-if="productosInventario.length === 0" class="empty-state-box">
+            Ningún producto coincide con la búsqueda.
+          </div>
+          <div v-else class="inventario-grid">
+            <div v-for="p in productosInventario" :key="p.id" class="inv-row">
+              <span class="inv-icon">
+                <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name">
+                <span v-else>{{ p.icon || '🍽️' }}</span>
+              </span>
+              <div class="inv-info">
+                <strong>{{ p.name }}</strong>
+                <small>{{ p.category }}</small>
+              </div>
+              <span class="inv-actual" :class="estadoStock(p)">
+                {{ Number(p.stock) || 0 }} ud.
+              </span>
+              <div class="inv-editor">
+                <button class="inv-step" @click="ajustarStockEdit(p.id, -1)" aria-label="Restar">−</button>
+                <input type="number" min="0" class="inv-input" v-model.number="stockEdit[p.id]">
+                <button class="inv-step" @click="ajustarStockEdit(p.id, 1)" aria-label="Sumar">+</button>
+              </div>
+              <button
+                class="btn-primary inv-save"
+                :disabled="!stockSinGuardar(p)"
+                @click="guardarStock(p)"
+              >Guardar</button>
             </div>
           </div>
         </div>
@@ -1751,10 +2011,17 @@ const exportarFacturasExcel = async () => {
                 <label>Cliente</label>
                 <input v-model="nuevaReserva.nombre" placeholder="Ej: María García">
               </div>
-              <div class="field-group">
-                <label>Teléfono (opcional)</label>
-                <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+              <div class="reserva-row">
+                <div class="field-group" style="flex: 1;">
+                  <label>Teléfono</label>
+                  <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label>Email</label>
+                  <input v-model="nuevaReserva.email" type="email" placeholder="cliente@email.com">
+                </div>
               </div>
+              <p class="contacto-hint">📩 Indica teléfono o email (al menos uno) — el cliente recibirá la confirmación.</p>
               <div class="reserva-row">
                 <div class="field-group" style="flex: 1;">
                   <label>Personas</label>
@@ -1828,6 +2095,7 @@ const exportarFacturasExcel = async () => {
                   }}
                 </span>
                 <div class="reserva-actions">
+                  <button v-if="r.telefono" class="r-btn whatsapp" @click="avisarWhatsApp(r)" title="Avisar por WhatsApp">💬</button>
                   <button class="r-btn edit" @click="abrirEditarReserva(r)" title="Editar">✏️</button>
                   <button v-if="r.estado === 'pendiente'" class="r-btn confirm" @click="cambiarEstadoReserva(r.id, 'confirmada')" title="Confirmar">✓</button>
                   <button v-if="r.estado === 'confirmada'" class="r-btn cumplida" @click="cambiarEstadoReserva(r.id, 'cumplida')" title="Marcar cumplida">🍽️</button>
@@ -2004,6 +2272,14 @@ const exportarFacturasExcel = async () => {
               </div>
             </div>
             <div class="ticket-divider"></div>
+            <div class="ticket-iva-row-admin">
+              <span>Base imponible</span>
+              <span>{{ desgloseFacturaSel.base.toFixed(2) }}€</span>
+            </div>
+            <div class="ticket-iva-row-admin">
+              <span>IVA ({{ TIPO_IVA_PCT }}%)</span>
+              <span>{{ desgloseFacturaSel.iva.toFixed(2) }}€</span>
+            </div>
             <div class="ticket-total-row">
               <span>TOTAL</span>
               <span>{{ facturaSeleccionada.total.toFixed(2) }}€</span>
@@ -2080,10 +2356,17 @@ const exportarFacturasExcel = async () => {
                 <label>Cliente</label>
                 <input v-model="reservaEditando.nombre" placeholder="Ej: María García">
               </div>
-              <div class="field-group">
-                <label>Teléfono (opcional)</label>
-                <input v-model="reservaEditando.telefono" placeholder="612 345 678">
+              <div class="reserva-row">
+                <div class="field-group" style="flex: 1;">
+                  <label>Teléfono</label>
+                  <input v-model="reservaEditando.telefono" placeholder="612 345 678">
+                </div>
+                <div class="field-group" style="flex: 1;">
+                  <label>Email</label>
+                  <input v-model="reservaEditando.email" type="email" placeholder="cliente@email.com">
+                </div>
               </div>
+              <p class="contacto-hint">📩 Indica teléfono o email (al menos uno).</p>
               <div class="reserva-row">
                 <div class="field-group">
                   <label>Personas</label>
@@ -2419,6 +2702,50 @@ const exportarFacturasExcel = async () => {
   box-shadow: 0 6px 14px rgba(22, 163, 74, 0.32);
 }
 .btn-export-excel:disabled { opacity: 0.45; cursor: not-allowed; }
+.export-caret { font-size: 0.72rem; margin-left: 4px; }
+
+/* ── DESPLEGABLE DE EXPORTACIÓN ── */
+.export-dropdown { position: relative; }
+.export-backdrop { position: fixed; inset: 0; z-index: 49; }
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  min-width: 180px;
+  background: white;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.16);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.export-menu button:hover { background: #f1f5f9; }
+
+/* ── PISTA DE CONTACTO EN RESERVAS ── */
+.contacto-hint {
+  font-size: 0.76rem;
+  color: #64748b;
+  margin: -4px 0 2px;
+  line-height: 1.4;
+}
 
 /* ── TABS ── */
 .tabs-zone-admin { display: flex; gap: 8px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 4px; align-items: center; }
@@ -2813,6 +3140,87 @@ const exportarFacturasExcel = async () => {
 .r-btn.cancel   { background: #fef3c7; color: #b45309; border-color: #fde68a; }
 .r-btn.delete   { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
 .r-btn.edit     { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
+.r-btn.whatsapp { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
+
+/* ── INVENTARIO ── */
+.inv-stat { font-weight: 700; }
+.inv-stat.bajo { color: #d97706; }
+.inv-stat.cero { color: #dc2626; }
+
+.inventario-grid { display: flex; flex-direction: column; gap: 8px; }
+
+.inv-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+  transition: border-color 0.18s, background 0.18s;
+}
+.inv-row:hover { border-color: #cbd5e1; background: white; }
+
+.inv-icon {
+  width: 42px; height: 42px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: white;
+  border: 1px solid #eef2f7;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem;
+  overflow: hidden;
+}
+.inv-icon img { width: 100%; height: 100%; object-fit: cover; }
+
+.inv-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.inv-info strong { color: #0f172a; font-size: 0.92rem; overflow-wrap: anywhere; }
+.inv-info small  { color: #94a3b8; font-size: 0.7rem; font-weight: 800; text-transform: uppercase; }
+
+.inv-actual {
+  flex-shrink: 0;
+  min-width: 74px;
+  text-align: center;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+.inv-actual.ok   { background: #dcfce7; color: #16a34a; }
+.inv-actual.bajo { background: #fef3c7; color: #b45309; }
+.inv-actual.cero { background: #fee2e2; color: #dc2626; }
+
+.inv-editor { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.inv-step {
+  width: 30px; height: 32px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: white;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.inv-step:hover { background: #f1f5f9; }
+.inv-input {
+  width: 56px;
+  height: 32px;
+  text-align: center;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.inv-save { padding: 7px 16px; font-size: 0.84rem; flex-shrink: 0; }
+.inv-save:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .inv-row { flex-wrap: wrap; }
+  .inv-info { flex-basis: 60%; }
+  .inv-save { margin-left: auto; }
+}
 
 /* ── EMOJI PICKER ── */
 .emoji-selector-container { position: relative; }
@@ -3038,7 +3446,8 @@ const exportarFacturasExcel = async () => {
 .t-qty-admin   { width: 30px; font-weight: 700; flex-shrink: 0; }
 .t-name-admin  { flex: 1; word-break: break-word; }
 .t-price-admin { font-weight: 700; white-space: nowrap; }
-.ticket-total-row { display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 900; color: #0f172a; }
+.ticket-iva-row-admin { display: flex; justify-content: space-between; font-size: 0.84rem; color: #64748b; font-weight: 600; margin-bottom: 4px; }
+.ticket-total-row { display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 900; color: #0f172a; margin-top: 4px; }
 
 .edit-items-container { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 4px; }
 .edit-items-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; margin: 8px 0; }

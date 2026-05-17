@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import {
   collection, onSnapshot, query, where,
-  orderBy, doc, updateDoc, Timestamp, getDoc, writeBatch, runTransaction, addDoc, getDocs
+  orderBy, doc, updateDoc, Timestamp, getDoc, writeBatch, runTransaction, addDoc, getDocs, increment
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { CartStore } from '../stores/cart'
@@ -12,11 +12,14 @@ import { useNegocio } from '../composables/useNegocio'
 import PosSidebar from '../components/pos/PosSidebar.vue'
 import PosFloorMap from '../components/pos/PosFloorMap.vue'
 import { useNotify } from '../composables/useNotify'
+import { useReservaNotify } from '../composables/useReservaNotify'
+import { desglosarIva, TIPO_IVA_PCT } from '../utils/iva'
 
 const cartStore = CartStore()
 const { currentUser, logout, localId } = useAuth()
 const { config: negocio, iniciar: iniciarNegocio, detener: detenerNegocio } = useNegocio()
 const { toast } = useNotify()
+const { enviarEmailReserva, linkWhatsAppReserva } = useReservaNotify()
 
 const abrirCobroRapido = (id: string) => {
   mesaIdTicket.value = id
@@ -73,6 +76,7 @@ const isCreandoReserva = ref(false)
 const nuevaReserva = ref({
   nombre: '',
   telefono: '',
+  email: '',
   personas: 2,
   fecha: new Date().toISOString().split('T')[0],
   hora: '20:00',
@@ -203,12 +207,25 @@ const buscarConflictoCam = async (mesaId: string, fechaHora: Date, fechaDia: str
 
 const abrirModalReserva = () => {
   nuevaReserva.value = {
-    nombre: '', telefono: '', personas: 2,
+    nombre: '', telefono: '', email: '', personas: 2,
     fecha: new Date().toISOString().split('T')[0],
     hora: '20:00',
     mesaId: '', notas: ''
   }
   mostrarModalReserva.value = true
+}
+
+// Abre WhatsApp con el mensaje de confirmación ya redactado (envío manual).
+const avisarWhatsAppCam = (r: any) => {
+  const fecha = r.fechaHora?.toDate
+    ? r.fechaHora.toDate()
+    : new Date((r.fechaHora?.seconds ?? 0) * 1000)
+  const link = linkWhatsAppReserva(
+    { nombre: r.nombre, telefono: r.telefono, personas: r.personas, fechaHora: fecha, notas: r.notas },
+    negocio.value.nombreNegocio || 'EasyOrder'
+  )
+  if (!link) return toast.info('Sin teléfono', 'Esta reserva no tiene teléfono.')
+  window.open(link, '_blank', 'noopener')
 }
 
 // Reservas del día ordenadas, para la lista del camarero
@@ -227,10 +244,16 @@ const cambiarEstadoReservaCamarero = async (id: string, nuevoEstado: 'confirmada
   }
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 const crearReservaCamarero = async () => {
   if (!localId.value) return
   const nombre = nuevaReserva.value.nombre.trim()
+  const telefono = nuevaReserva.value.telefono.trim()
+  const email = nuevaReserva.value.email.trim()
   if (!nombre) return toast.warning('El nombre del cliente es obligatorio.')
+  if (!telefono && !email) return toast.warning('Indica un email o un teléfono de contacto.')
+  if (email && !EMAIL_RE.test(email)) return toast.warning('El email no tiene un formato válido.')
   if (nuevaReserva.value.personas <= 0) return toast.warning('Indica al menos 1 comensal.')
   if (!nuevaReserva.value.fecha || !nuevaReserva.value.hora) return toast.warning('Fecha y hora son obligatorias.')
 
@@ -251,19 +274,37 @@ const crearReservaCamarero = async () => {
       }
     }
 
+    const personas = Number(nuevaReserva.value.personas)
+    const notas = nuevaReserva.value.notas.trim()
     await addDoc(collection(db, `locales/${localId.value}/reservas`), {
       nombre,
-      telefono: nuevaReserva.value.telefono.trim() || '',
-      personas: Number(nuevaReserva.value.personas),
+      telefono,
+      email,
+      personas,
       fechaHora: Timestamp.fromDate(fechaHora),
       fechaDia: nuevaReserva.value.fecha,
       mesaId: nuevaReserva.value.mesaId || '',
-      notas: nuevaReserva.value.notas.trim() || '',
+      notas,
       estado: 'pendiente',
       creadoEn: Timestamp.now()
     })
-    toast.success('Reserva guardada')
     mostrarModalReserva.value = false
+
+    // Email de confirmación: si falla, la reserva ya está creada — solo avisamos.
+    if (email) {
+      try {
+        const enviado = await enviarEmailReserva(
+          { nombre, email, telefono, personas, fechaHora, notas },
+          negocio.value.nombreNegocio || 'EasyOrder'
+        )
+        if (enviado) toast.success('Reserva guardada', 'Email de confirmación enviado al cliente.')
+        else toast.success('Reserva guardada')
+      } catch {
+        toast.warning('Reserva guardada', 'Pero no se pudo enviar el email de confirmación.')
+      }
+    } else {
+      toast.success('Reserva guardada')
+    }
   } catch (e) {
     console.error(e)
     toast.error('No se pudo crear la reserva.')
@@ -352,10 +393,18 @@ const recalcularHayAlgoListo = () => {
 }
 
 const comandasListasCount = computed(() => {
-  // Cuenta comandas con al menos una línea lista O toda la comanda lista
+  // Cuenta comandas con algo pendiente de servir: la comanda entera lista,
+  // o alguna línea marcada lista por cocina que AÚN no se haya servido.
+  // Excluye lo ya entregado/pagado y las líneas ya servidas (lineasEntregadas).
   return comandasActivas.value.filter(c => {
+    if (c.destino === 'camarero') return false
+    if (c.estado === 'entregado' || c.estado === 'pagado') return false
     if (c.estado === 'listo') return true
-    if (c.estadoLineas) return Object.values(c.estadoLineas).some(v => v === true)
+    if (c.estadoLineas) {
+      return Object.entries(c.estadoLineas).some(([idx, val]) =>
+        val === true && c.lineasEntregadas?.[idx] !== true
+      )
+    }
     return false
   }).length
 })
@@ -364,6 +413,14 @@ const comandasCamarero = computed(() =>
   comandasActivas.value.filter(c =>
     c.destino === 'camarero' && c.estado === 'para_camarero'
   )
+)
+
+// Líneas de bebida/camarero aún sin servir — para el aviso flotante móvil.
+const bebidasPendientesCount = computed(() =>
+  comandasCamarero.value.reduce((acc, c) => {
+    const lineas = (c.lineas ?? []) as any[]
+    return acc + lineas.filter((_, i) => c.lineasEntregadas?.[String(i)] !== true).length
+  }, 0)
 )
 
 // Si tras servir una comanda no quedan más pendientes en la mesa, la pasamos
@@ -593,6 +650,10 @@ const cuentaFinalMesa = computed(() => {
   return { items: Array.from(itemsAgrupados.values()), total: totalCalculado }
 })
 
+// Desglose de IVA del ticket actual: los precios ya incluyen IVA, así que
+// el total no cambia — solo se descompone en base imponible + cuota.
+const desgloseTicket = computed(() => desglosarIva(cuentaFinalMesa.value.total))
+
 const mesasFiltradas = computed(() => {
   let filtradas = tables.value.filter(t =>
     t.zona === zonaActiva.value || (!t.zona && zonas.value.length === 0)
@@ -663,6 +724,44 @@ const categoriasCarta = computed(() => {
 const productosFiltrados = computed(() =>
   productos.value.filter((p: any) => p.category === categoriaSeleccionada.value)
 )
+
+// ── STOCK / INVENTARIO ────────────────────────────────────────────
+// Unidades ya añadidas al carrito de un producto.
+const enCarrito = (id: string) => cartStore.items.find(i => i.id === id)?.quantity ?? 0
+// Stock actual del producto en el menú (0 si no está configurado).
+const stockDe = (id: string) => {
+  const p = productos.value.find((x: any) => x.id === id)
+  return Number(p?.stock) || 0
+}
+
+// Añade un producto desde la carta respetando el stock disponible.
+const agregarProductoCarta = (p: any) => {
+  const stock = Number(p.stock) || 0
+  if (enCarrito(p.id) >= stock) {
+    return toast.warning('Sin stock', `No quedan más unidades de ${p.name}.`)
+  }
+  cartStore.addToCart(p)
+}
+
+// Incrementa un ítem del carrito sin pasarse del stock.
+const incrementarItem = (item: any) => {
+  if (enCarrito(item.id) >= stockDe(item.id)) {
+    return toast.warning('Sin stock', `No quedan más unidades de ${item.name}.`)
+  }
+  cartStore.increment(item.id)
+}
+
+// Fija la cantidad escrita a mano, recortándola al stock disponible.
+const setCantidadItem = (item: any, valor: number) => {
+  const stock = stockDe(item.id)
+  const n = Math.floor(Number(valor)) || 0
+  if (n > stock) {
+    toast.warning('Sin stock', `Solo quedan ${stock} unidades de ${item.name}.`)
+    cartStore.setQuantity(item.id, stock)
+  } else {
+    cartStore.setQuantity(item.id, n)
+  }
+}
 
 const mesaActual = computed(() =>
   tables.value.find(t => t.id === mesaSeleccionadaId.value)
@@ -769,6 +868,7 @@ const guardarCopiaYFinalizar = async () => {
     const batch = writeBatch(db)
     const facturasRef = collection(db, `locales/${localId.value}/facturas`)
 
+    const desglose = desglosarIva(consumoTotal.total)
     batch.set(doc(facturasRef), {
       mesaId: mesaIdTicket.value,
       mesaNumero: mesaALiberar.nr,
@@ -778,6 +878,9 @@ const guardarCopiaYFinalizar = async () => {
       usuarioEmail: currentUser.value.email,
       metodoPago: metodoPago.value,
       total: consumoTotal.total,
+      base: desglose.base,
+      iva: desglose.iva,
+      tipoIva: desglose.tipo,
       items: consumoTotal.items.map(i => ({
         nombre: i.nombre,
         cantidad: i.cantidad,
@@ -886,6 +989,17 @@ const enviarPedido = async () => {
     batch.update(doc(db, `locales/${localId.value}/mesas`, mesaSeleccionadaId.value), {
       estado: 'preparando'
     })
+
+    // Descuento de inventario: cada línea resta del stock del producto.
+    // increment() es atómico — sin condiciones de carrera. Se omiten los
+    // productos que ya no existen en el menú para no romper el batch.
+    for (const item of cartStore.items) {
+      if (productos.value.some((p: any) => p.id === item.id)) {
+        batch.update(doc(db, `locales/${localId.value}/productos`, item.id), {
+          stock: increment(-item.quantity)
+        })
+      }
+    }
 
     await batch.commit()
 
@@ -1034,6 +1148,39 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 
     </div>
 
+    <!-- Avisos flotantes (solo móvil): cocina y bebidas pendientes de servir.
+         En móvil el sidebar está oculto, así que el camarero no ve los badges. -->
+    <div class="avisos-movil">
+      <transition name="aviso-slide">
+        <button
+          v-if="bebidasPendientesCount > 0"
+          class="aviso-movil aviso-bebidas"
+          @click="mostrarModalCamarero = true"
+        >
+          <span class="aviso-dot"></span>
+          <span class="aviso-texto">
+            🍹 {{ bebidasPendientesCount }}
+            {{ bebidasPendientesCount === 1 ? 'bebida' : 'bebidas' }} por servir
+          </span>
+          <span class="aviso-chevron">›</span>
+        </button>
+      </transition>
+      <transition name="aviso-slide">
+        <button
+          v-if="comandasListasCount > 0"
+          class="aviso-movil aviso-cocina"
+          @click="abrirMonitor"
+        >
+          <span class="aviso-dot"></span>
+          <span class="aviso-texto">
+            🍽️ {{ comandasListasCount }}
+            {{ comandasListasCount === 1 ? 'pedido listo' : 'pedidos listos' }} para servir
+          </span>
+          <span class="aviso-chevron">›</span>
+        </button>
+      </transition>
+    </div>
+
     <transition name="fade">
       <div v-if="mostrarModalCarta" class="modal-backdrop carta-backdrop" @click.self="cerrarCartaPedido">
         <div class="tomar-nota-modal">
@@ -1082,7 +1229,9 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                     v-for="p in productosFiltrados"
                     :key="p.id"
                     class="carta-product-card"
-                    @click="cartStore.addToCart(p)"
+                    :class="{ agotado: (Number(p.stock) || 0) <= 0 }"
+                    :disabled="(Number(p.stock) || 0) <= 0"
+                    @click="agregarProductoCarta(p)"
                   >
                     <span class="carta-product-media">
                       <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name">
@@ -1091,6 +1240,12 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                     <span class="carta-product-info">
                       <strong>{{ p.name }}</strong>
                       <small>{{ p.category }}</small>
+                      <span
+                        class="carta-product-stock"
+                        :class="{ cero: (Number(p.stock) || 0) <= 0, bajo: (Number(p.stock) || 0) > 0 && (Number(p.stock) || 0) <= 5 }"
+                      >
+                        {{ (Number(p.stock) || 0) <= 0 ? 'Agotado' : `Quedan ${Number(p.stock) || 0}` }}
+                      </span>
                     </span>
                     <span class="carta-product-price" :style="{ color: negocio.colorAcento || '#4f46e5' }">
                       {{ Number(p.price).toFixed(2) }}€
@@ -1121,9 +1276,9 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                         max="999"
                         class="qty-input"
                         :value="item.quantity"
-                        @change="cartStore.setQuantity(item.id, Number(($event.target as HTMLInputElement).value))"
+                        @change="setCantidadItem(item, Number(($event.target as HTMLInputElement).value))"
                       >
-                      <button class="qty-btn" @click="cartStore.increment(item.id)" :aria-label="`Añadir otro ${item.name}`">+</button>
+                      <button class="qty-btn" @click="incrementarItem(item)" :aria-label="`Añadir otro ${item.name}`">+</button>
                     </div>
                     <div class="summary-info">
                       <strong>{{ item.name }}</strong>
@@ -1224,9 +1379,17 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
             <div v-else class="ticket-empty">(La mesa no tiene consumo registrado)</div>
 
             <div class="ticket-divider"></div>
+            <div class="ticket-iva-row">
+              <span>Base imponible</span>
+              <span>{{ desgloseTicket.base.toFixed(2) }}€</span>
+            </div>
+            <div class="ticket-iva-row">
+              <span>IVA ({{ TIPO_IVA_PCT }}%)</span>
+              <span>{{ desgloseTicket.iva.toFixed(2) }}€</span>
+            </div>
             <div class="ticket-total">
               <span>TOTAL</span>
-              <span>{{ cuentaFinalMesa.total.toFixed(2) }}€</span>
+              <span>{{ desgloseTicket.total.toFixed(2) }}€</span>
             </div>
           </div>
 
@@ -1266,10 +1429,11 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                 :style="mesaMonitorSeleccionada === mesa.id ? { background: negocio.colorAcento || '#4f46e5', color: 'white' } : {}"
                 @click="mesaMonitorSeleccionada = mesa.id"
               >
-                <span>Mesa {{ mesa.numero }}</span>
-                <span v-if="mesa.tieneListos" class="badge-listo">✓ LISTO</span>
-                <br>
-                <small style="font-weight: 500; opacity: 0.85;">{{ mesa.zona }}</small>
+                <span class="mtb-top">
+                  <span class="mtb-mesa">Mesa {{ mesa.numero }}</span>
+                  <span v-if="mesa.tieneListos" class="badge-listo">✓ LISTO</span>
+                </span>
+                <small class="mtb-zona">{{ mesa.zona }}</small>
               </button>
             </div>
             <div class="monitor-content">
@@ -1442,6 +1606,12 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                 </span>
                 <div class="reserva-row-actions">
                   <button
+                    v-if="r.telefono"
+                    class="r-btn whatsapp"
+                    @click="avisarWhatsAppCam(r)"
+                    title="Avisar por WhatsApp"
+                  >💬</button>
+                  <button
                     v-if="r.estado === 'pendiente' && r.mesaId"
                     class="btn-atender-reserva"
                     @click="confirmarReservaYAbrirCarta(r.id, r.mesaId)"
@@ -1485,10 +1655,17 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
               <label>Cliente</label>
               <input v-model="nuevaReserva.nombre" placeholder="Ej: María García">
             </div>
-            <div class="field-group">
-              <label>Teléfono (opcional)</label>
-              <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+            <div class="reserva-modal-row reserva-modal-row-2">
+              <div class="field-group">
+                <label>Teléfono</label>
+                <input v-model="nuevaReserva.telefono" placeholder="612 345 678">
+              </div>
+              <div class="field-group">
+                <label>Email</label>
+                <input v-model="nuevaReserva.email" type="email" placeholder="cliente@email.com">
+              </div>
             </div>
+            <p class="contacto-hint">📩 Indica teléfono o email (al menos uno) — el cliente recibirá la confirmación.</p>
             <div class="reserva-modal-row">
               <div class="field-group">
                 <label>Personas</label>
@@ -1842,6 +2019,28 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .carta-product-info small  { color: #94a3b8; font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
 .carta-product-price { font-weight: 900; font-size: 1.08rem; }
 
+/* Etiqueta de stock en la carta */
+.carta-product-stock {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #16a34a;
+  margin-top: 2px;
+}
+.carta-product-stock.bajo { color: #d97706; }
+.carta-product-stock.cero { color: #dc2626; }
+
+/* Producto agotado: no clicable y atenuado */
+.carta-product-card.agotado {
+  cursor: not-allowed;
+  opacity: 0.55;
+  filter: grayscale(0.4);
+}
+.carta-product-card.agotado:hover {
+  transform: none;
+  border-color: var(--border, #e2e8f0);
+  box-shadow: var(--shadow-sm);
+}
+
 .carta-empty {
   background: white;
   border: 1px dashed #cbd5e1;
@@ -2055,7 +2254,8 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .ticket-title    { text-align: center; font-weight: 900; margin: 0; }
 .ticket-subtitle { text-align: center; font-size: 0.9rem; margin: 5px 0 20px; color: #666; }
 .ticket-divider  { border-top: 1px dashed #ccc; margin: 15px 0; }
-.ticket-total    { display: flex; justify-content: space-between; font-size: 1.3rem; font-weight: 900; color: #000; }
+.ticket-iva-row  { display: flex; justify-content: space-between; font-size: 0.86rem; color: #64748b; font-weight: 600; margin-bottom: 4px; }
+.ticket-total    { display: flex; justify-content: space-between; font-size: 1.3rem; font-weight: 900; color: #000; margin-top: 4px; }
 
 .metodo-btns { display: flex; gap: 10px; }
 
@@ -2144,7 +2344,14 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   text-align: left;
   box-shadow: var(--shadow-xs);
   transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s, background 0.18s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
+
+.mtb-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mtb-mesa { font-weight: 700; }
+.mtb-zona { font-weight: 500; opacity: 0.85; }
 
 .monitor-table-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 
@@ -2161,7 +2368,8 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   font-size: 0.65rem;
   padding: 2px 6px;
   border-radius: 10px;
-  margin-left: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .monitor-content { flex: 1; padding: 24px; overflow-y: auto; }
@@ -2384,6 +2592,47 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 
 .btn-todo-servido:hover { background: #d97706; color: white; }
 
+/* ── AVISOS FLOTANTES (solo móvil) ── */
+/* Ocultos por defecto: en escritorio el sidebar ya muestra los contadores. */
+.avisos-movil { display: none; }
+
+.aviso-movil {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 16px;
+  border: none;
+  border-radius: 14px;
+  color: white;
+  font-size: 0.9rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aviso-movil.aviso-cocina  { background: linear-gradient(135deg, #16a34a, #15803d); box-shadow: 0 10px 28px rgba(22, 163, 74, 0.5); }
+.aviso-movil.aviso-bebidas { background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 10px 28px rgba(217, 119, 6, 0.5); }
+
+.aviso-texto { flex: 1; text-align: left; line-height: 1.3; }
+.aviso-chevron { font-size: 1.4rem; font-weight: 900; flex-shrink: 0; }
+.aviso-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: white;
+  flex-shrink: 0;
+  animation: avisoDot 1.4s infinite;
+}
+
+@keyframes avisoDot {
+  0%   { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.75); }
+  70%  { box-shadow: 0 0 0 9px rgba(255, 255, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+}
+
+.aviso-slide-enter-active,
+.aviso-slide-leave-active { transition: transform 0.3s ease, opacity 0.3s ease; }
+.aviso-slide-enter-from,
+.aviso-slide-leave-to { transform: translateY(140%); opacity: 0; }
+
 /* ── RESPONSIVE ── */
 @media (max-width: 1100px) {
   .tomar-nota-body { grid-template-columns: 1fr; }
@@ -2391,17 +2640,57 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 @media (max-width: 780px) {
-  /* Tomar nota → fullscreen */
+  /* ── Tomar nota → fullscreen y compacto ── */
   .tomar-nota-modal { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
-  .tomar-nota-header { align-items: flex-start; padding: 14px 16px; }
-  .tomar-nota-header h2 { font-size: 1.2rem; }
+  .tomar-nota-header { padding: 10px 14px; gap: 10px; }
+  .tomar-nota-kicker { font-size: 0.62rem; margin-bottom: 1px; }
+  .tomar-nota-header h2 { font-size: 1.05rem; }
+  .tomar-nota-header p  { font-size: 0.76rem; margin-top: 1px; }
+  .btn-close-carta { padding: 8px 12px; font-size: 0.82rem; }
+
+  /* Carta arriba flexible, carrito abajo con altura propia */
+  .tomar-nota-body { grid-template-rows: minmax(0, 1fr) auto; }
   .carta-menu-section { grid-template-columns: 1fr; }
-  .carta-category-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none; border-bottom: 1px solid #e2e8f0; padding: 12px; max-height: none; }
-  .carta-category-btn { min-width: 140px; flex-shrink: 0; }
-  .carta-products-area { padding: 14px; }
-  .carta-products-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .carta-product-card { min-height: 180px; }
-  .carta-order-summary { max-height: 220px; }
+
+  /* Categorías como chips compactos en fila */
+  .carta-category-rail {
+    flex-direction: row; overflow-x: auto; overflow-y: hidden;
+    border-right: none; border-bottom: 1px solid #e2e8f0;
+    padding: 8px 10px; gap: 6px; max-height: none;
+  }
+  .carta-category-btn { min-width: 0; flex-shrink: 0; padding: 6px 10px; gap: 6px; font-size: 0.8rem; }
+  .carta-category-media { width: 26px; height: 26px; font-size: 0.95rem; }
+
+  .carta-products-area { padding: 12px; }
+  .carta-section-title { margin-bottom: 10px; }
+  .carta-section-title h3 { font-size: 1.05rem; }
+  .carta-section-title p  { font-size: 0.74rem; }
+
+  /* Productos como lista compacta de filas — se navega mucho mejor */
+  .carta-products-grid { grid-template-columns: 1fr; gap: 8px; }
+  .carta-product-card {
+    flex-direction: row;
+    align-items: center;
+    min-height: 0;
+    padding: 8px 10px;
+    gap: 10px;
+  }
+  .carta-product-media { width: 50px; height: 50px; flex-shrink: 0; border-radius: 10px; font-size: 1.5rem; }
+  .carta-product-info { flex: 1; }
+  .carta-product-info strong { font-size: 0.9rem; }
+  /* La categoría es redundante dentro de la carta — se oculta en móvil */
+  .carta-product-info small { display: none; }
+  .carta-product-price { font-size: 1rem; flex-shrink: 0; }
+
+  /* El carrito ocupa hasta algo más de medio alto: sitio real para
+     ver y modificar lo pedido. El botón de enviar queda abajo del todo. */
+  .carta-order-summary { max-height: 56vh; border-left: none; border-top: 1px solid #e2e8f0; }
+  .summary-header { padding: 12px 16px; }
+  .summary-items { padding: 12px; gap: 8px; }
+  .summary-footer { padding: 12px 16px; }
+  .summary-total { margin-bottom: 8px; }
+  .summary-total strong { font-size: 1.2rem; }
+  .btn-enviar-modal { padding: 12px; }
 
   /* Resto de modales → fullscreen también */
   .modal-backdrop { padding: 0; }
@@ -2416,20 +2705,43 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   .ticket-paper { width: 92vw; max-width: 360px; }
   .modal-actions { width: 92vw; max-width: 360px; }
 
-  /* Monitor en móvil: sidebar arriba en lugar de izquierda */
+  /* ── Monitor de pedidos compacto ── */
+  .monitor-header { padding: 12px 14px; }
+  .monitor-header h2 { font-size: 0.92rem; }
   .monitor-body { flex-direction: column; }
-  .monitor-sidebar { width: 100%; max-height: 140px; border-right: none; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; }
+  .monitor-sidebar {
+    width: 100%; max-height: none;
+    border-right: none; border-bottom: 1px solid #e2e8f0;
+    display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden;
+    padding: 10px;
+  }
   .monitor-sidebar > h3 { display: none; }
-  .monitor-table-btn { min-width: 140px; flex-shrink: 0; margin-bottom: 0; }
+  .monitor-table-btn { width: auto; min-width: 124px; flex-shrink: 0; margin-bottom: 0; padding: 8px 10px; font-size: 0.82rem; }
+  .monitor-content { padding: 14px; }
+  .comanda-card { padding: 12px; margin-bottom: 10px; }
 
   /* Header del mapa: tabs en scroll horizontal si no caben */
   .map-header { padding: 0 14px; gap: 12px; }
   .tabs-zone { overflow-x: auto; flex-shrink: 1; min-width: 0; }
   .tabs-zone button { padding: 8px 14px; font-size: 0.8rem; flex-shrink: 0; }
 
+  /* Avisos flotantes apilados abajo (cocina + bebidas) */
+  .avisos-movil {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 14px;
+    z-index: 35;
+  }
+
   /* Modal nueva reserva: fila de 3 inputs apilada */
   .reserva-modal-row { grid-template-columns: 1fr 1fr; }
   .reserva-modal-row .field-group:first-child { grid-column: 1 / -1; }
+  /* La fila de contacto (teléfono/email) se mantiene en 2 columnas */
+  .reserva-modal-row-2 .field-group:first-child { grid-column: auto; }
 }
 
 @media (max-width: 480px) {
@@ -2493,6 +2805,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 .reserva-row-actions .r-btn.confirm  { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
 .reserva-row-actions .r-btn.cumplida { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
 .reserva-row-actions .r-btn.cancel   { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+.reserva-row-actions .r-btn.whatsapp { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
 
 .btn-atender-reserva {
   padding: 7px 14px;
@@ -2561,6 +2874,13 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   gap: 12px;
 }
 .reserva-modal-row .field-group { min-width: 0; }
+.reserva-modal-row-2 { grid-template-columns: 1fr 1fr; }
+.contacto-hint {
+  font-size: 0.76rem;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.4;
+}
 .reserva-modal-body .field-group { display: flex; flex-direction: column; gap: 6px; }
 .reserva-modal-body .field-group label { font-size: 0.78rem; font-weight: 700; color: #475569; }
 .reserva-modal-body .field-group input,

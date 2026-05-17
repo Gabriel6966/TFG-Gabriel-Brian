@@ -32,7 +32,8 @@ const router = createRouter({
       path: '/tables',
       name: 'Tables',
       component: vistas['../views/MesasView.vue'],
-      meta: { requiresAuth: true, roles: ['camarero', 'admin'] }
+      // Separación estricta de roles: cada vista admite un único rol.
+      meta: { requiresAuth: true, roles: ['camarero'] }
     },
     {
       path: '/admin',
@@ -44,7 +45,7 @@ const router = createRouter({
       path: '/kitchen',
       name: 'Kitchen',
       component: vistas['../views/CocinaView.vue'],
-      meta: { requiresAuth: true, roles: ['cocinero', 'admin'] }
+      meta: { requiresAuth: true, roles: ['cocinero'] }
     }
   ]
 })

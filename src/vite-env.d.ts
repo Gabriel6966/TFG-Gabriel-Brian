@@ -13,6 +13,7 @@ interface ImportMetaEnv {
   readonly VITE_CLOUDINARY_PRESET: string
   readonly VITE_EMAILJS_SERVICE_ID: string
   readonly VITE_EMAILJS_TEMPLATE_ID: string
+  readonly VITE_EMAILJS_TEMPLATE_RESERVA_ID: string
   readonly VITE_EMAILJS_PUBLIC_KEY: string
 }
 
