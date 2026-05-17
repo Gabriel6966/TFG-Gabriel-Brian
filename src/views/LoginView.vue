@@ -734,4 +734,25 @@ h2 {
     color: #64748b;
   }
 }
+
+/* Móvil pequeño: se compacta todo y se oculta el showcase decorativo
+   (órbitas + isotipo) — el wordmark ya identifica la marca y el tilt 3D
+   no funciona en táctil, así que en el móvil solo ocupaba espacio. */
+@media (max-width: 560px) {
+  .brand-section { flex: none; padding: 26px 16px 34px; }
+  .logo-showcase { display: none; }
+  .wordmark-image { width: min(72%, 260px); }
+  .brand-mark { margin-bottom: 4px; }
+  .subtitle { font-size: 0.9rem; margin-bottom: 0; }
+
+  .premium-glass { padding: 28px 22px; margin-top: -24px; }
+  .card-header { margin-bottom: 22px; }
+  h2 { font-size: 1.4rem; }
+  .form-subtitle { font-size: 0.86rem; }
+  .input-group { margin-bottom: 15px; }
+  .input-group label { font-size: 0.82rem; }
+  .input-wrapper input { padding: 12px 14px; font-size: 0.92rem; }
+  .form-extras { margin-bottom: 20px; }
+  .btn-primary { height: 48px; font-size: 0.95rem; }
+}
 </style>

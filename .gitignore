@@ -20,6 +20,9 @@ dist-ssr
 # Claude Code workspace
 .claude/
 
+# Firebase (caché local de despliegue)
+.firebase/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

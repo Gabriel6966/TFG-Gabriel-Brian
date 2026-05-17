@@ -29,7 +29,10 @@ $files = @(
     "src/views/CocinaView.vue",
     "src/views/AdminView.vue",
     # Seguridad / config
-    "firestore.rules"
+    "firestore.rules",
+    # Contexto del proyecto (para documentación / memoria)
+    "CLAUDE.md",
+    "package.json"
 )
 
 $output = ""
