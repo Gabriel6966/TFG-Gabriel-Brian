@@ -40,6 +40,7 @@ interface Producto {
   imageUrl?: string
   sirveCamarero?: boolean
   stock?: number
+  recomendado?: boolean
 }
 
 interface Categoria {
@@ -183,7 +184,8 @@ const nuevoProducto = ref({
   icon: '🍽️',
   imageUrl: '',
   sirveCamarero: false,
-  stock: 0
+  stock: 0,
+  recomendado: false
 })
 const nuevaCategoria = ref({ nombre: '', icono: '🍽️', imageUrl: '' })
 const editandoProductoId = ref<string | null>(null)
@@ -708,7 +710,8 @@ const resetProductoForm = () => {
     icon: '🍽️',
     imageUrl: '',
     sirveCamarero: false,
-    stock: 0
+    stock: 0,
+    recomendado: false
   }
 }
 
@@ -721,7 +724,8 @@ const editarProducto = (producto: Producto) => {
     icon: producto.icon,
     imageUrl: producto.imageUrl || '',
     sirveCamarero: producto.sirveCamarero ?? false,
-    stock: Number(producto.stock) || 0
+    stock: Number(producto.stock) || 0,
+    recomendado: producto.recomendado ?? false
   }
 }
 
@@ -760,7 +764,8 @@ const guardarProducto = async () => {
       icon: nuevoProducto.value.icon || '🍽️',
       imageUrl: nuevoProducto.value.imageUrl || '',
       sirveCamarero: nuevoProducto.value.sirveCamarero,
-      stock: Math.max(0, Math.floor(Number(nuevoProducto.value.stock) || 0))
+      stock: Math.max(0, Math.floor(Number(nuevoProducto.value.stock) || 0)),
+      recomendado: nuevoProducto.value.recomendado
     }
     if (editandoProductoId.value) {
       await updateDoc(doc(db, `locales/${localId.value}/productos`, editandoProductoId.value), payload)
@@ -1795,6 +1800,25 @@ const exportarFacturasExcel = async () => {
                 </div>
               </div>
 
+              <!-- ── TOGGLE RECOMENDADO DE LA CASA ── -->
+              <div class="field-group">
+                <label>Destacar en la carta</label>
+                <div class="toggle-row">
+                  <div class="toggle-info">
+                    <span class="toggle-label">{{ nuevoProducto.recomendado ? '⭐ Recomendado de la casa' : 'Plato normal' }}</span>
+                    <span class="toggle-desc">{{ nuevoProducto.recomendado ? 'Aparecerá destacado para el cliente' : 'Sin distintivo en la carta' }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="toggle-switch"
+                    :class="{ active: nuevoProducto.recomendado }"
+                    @click="nuevoProducto.recomendado = !nuevoProducto.recomendado"
+                  >
+                    <span class="toggle-thumb"></span>
+                  </button>
+                </div>
+              </div>
+
               <div class="form-actions-stacked">
                 <button @click="guardarProducto" class="btn-primary btn-full">
                   {{ editandoProductoId ? 'Guardar cambios' : '+ Guardar en el Menú' }}
@@ -1833,6 +1857,7 @@ const exportarFacturasExcel = async () => {
                     <span class="menu-plato-category">
                       {{ categoria }}
                       <span v-if="p.sirveCamarero" class="badge-camarero">🍺 Camarero</span>
+                      <span v-if="p.recomendado" class="badge-recomendado">⭐ Recomendado</span>
                     </span>
                   </div>
                   <div class="menu-plato-footer">
@@ -2943,6 +2968,19 @@ const exportarFacturasExcel = async () => {
   display: inline-block;
   background: #fef3c7;
   color: #b45309;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 20px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.badge-recomendado {
+  display: inline-block;
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
   font-size: 0.65rem;
   font-weight: 700;
   padding: 1px 6px;

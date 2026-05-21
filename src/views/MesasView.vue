@@ -1229,10 +1229,11 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
                     v-for="p in productosFiltrados"
                     :key="p.id"
                     class="carta-product-card"
-                    :class="{ agotado: (Number(p.stock) || 0) <= 0 }"
+                    :class="{ agotado: (Number(p.stock) || 0) <= 0, recomendado: p.recomendado }"
                     :disabled="(Number(p.stock) || 0) <= 0"
                     @click="agregarProductoCarta(p)"
                   >
+                    <span v-if="p.recomendado" class="carta-product-badge">⭐ Recomendado</span>
                     <span class="carta-product-media">
                       <img v-if="p.imageUrl" :src="p.imageUrl" :alt="p.name">
                       <span v-else>{{ p.icon || '🍽️' }}</span>
@@ -1975,6 +1976,7 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
 }
 
 .carta-product-card {
+  position: relative;
   border: 1px solid var(--border, #e2e8f0);
   background: white;
   border-radius: var(--radius-lg, 16px);
@@ -1987,6 +1989,28 @@ const marcarLineaEntregada = async (comanda: any, lineaIndex: string | number) =
   text-align: left;
   box-shadow: var(--shadow-sm);
   transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.18s;
+}
+
+/* Plato destacado: borde cálido y badge en esquina. */
+.carta-product-card.recomendado {
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 1px #fbbf24 inset, var(--shadow-sm);
+}
+
+.carta-product-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: linear-gradient(135deg, #f59e0b, #ef4444);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.35);
+  pointer-events: none;
+  z-index: 2;
 }
 
 .carta-product-card:hover {
