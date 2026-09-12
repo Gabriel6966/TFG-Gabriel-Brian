@@ -65,6 +65,35 @@ service cloud.firestore {
              && getAfter(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.usadoPor == request.auth.uid;
     }
 
+    // Las acciones del camarero sobre una comanda se limitan al servicio y al
+    // cobro. El contenido, importes y datos de la mesa permanecen inmutables.
+    function waiterCanUpdateComanda() {
+      return isCamarero()
+             && request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['estado', 'lineasEntregadas'])
+             && (
+               // Marcar líneas entregadas sin alterar el flujo de la comanda.
+               (request.resource.data.estado == resource.data.estado
+                && resource.data.estado in ['en_cocina', 'listo', 'para_camarero'])
+               // Entregar solo comandas pendientes de servicio.
+               || (request.resource.data.estado == 'entregado'
+                   && resource.data.estado in ['listo', 'para_camarero'])
+               // Cobrar solo una comanda existente del flujo operativo.
+               || (request.resource.data.estado == 'pagado'
+                   && resource.data.estado in ['en_cocina', 'listo', 'para_camarero', 'entregado'])
+             );
+    }
+
+    // Cocina solo puede cambiar el avance de las líneas que debe preparar.
+    function cookCanUpdateComanda() {
+      return isCocinero()
+             && resource.data.destino == 'cocina'
+             && request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['estado', 'estadoLineas'])
+             && resource.data.estado in ['en_cocina', 'listo']
+             && request.resource.data.estado in ['en_cocina', 'listo'];
+    }
+
     // ── USUARIOS ────────────────────────────────────────────────
     match /usuarios/{uid} {
       // El propio usuario siempre puede leer su perfil (necesario para login
@@ -167,11 +196,17 @@ service cloud.firestore {
         allow write: if isAdmin() && sameLocal(localId);
       }
 
-      // Mesas: cualquier staff lee y actualiza (camarero cambia estado/pos),
-      // solo admin crea/borra.
+      // Mesas: el camarero puede reflejar exclusivamente el estado de servicio.
+      // La posición, capacidad y demás configuración pertenecen al administrador.
       match /mesas/{mesaId} {
         allow read:           if isStaff() && sameLocal(localId);
-        allow update:         if isStaff() && sameLocal(localId);
+        allow update: if sameLocal(localId) && (
+                        isAdmin()
+                        || (isCamarero()
+                            && request.resource.data.diff(resource.data).affectedKeys()
+                                 .hasOnly(['estado'])
+                            && request.resource.data.estado in ['libre', 'ocupada', 'preparando'])
+                      );
         allow create, delete: if isAdmin() && sameLocal(localId);
       }
 
@@ -179,14 +214,15 @@ service cloud.firestore {
       match /productos/{prodId} {
         allow read: if isStaff() && sameLocal(localId);
         allow create, delete: if isAdmin() && sameLocal(localId);
-        // Update: el admin puede editar cualquier campo; el resto del personal
-        // solo el `stock` (descuento de inventario al registrar un pedido).
-        // Así un camarero no puede alterar precio, nombre, etc.
+        // El camarero solo descuenta stock al registrar un pedido. Cocina no
+        // necesita escribir inventario y ningún rol operativo puede editar el menú.
         allow update: if sameLocal(localId) && (
                         isAdmin()
-                        || (isStaff()
+                        || (isCamarero()
                             && request.resource.data.diff(resource.data)
-                                 .affectedKeys().hasOnly(['stock']))
+                                 .affectedKeys().hasOnly(['stock'])
+                            && request.resource.data.stock is number
+                            && request.resource.data.stock >= 0)
                       );
       }
 
@@ -208,29 +244,65 @@ service cloud.firestore {
         allow write: if isAdmin() && sameLocal(localId);
       }
 
-      // Comandas: camarero/admin crean. Cualquier staff actualiza (cocinero marca
-      // listo, camarero entrega). Solo admin borra.
+      // Comandas: al crearlas se vinculan a su autor y a una mesa real del local.
+      // Cada rol solo puede modificar los campos necesarios para su flujo.
       match /comandas/{comandaId} {
         allow read:   if isStaff() && sameLocal(localId);
-        allow create: if (isAdmin() || isCamarero()) && sameLocal(localId);
-        allow update: if isStaff() && sameLocal(localId);
+        allow create: if (isAdmin() || isCamarero())
+                      && sameLocal(localId)
+                      && request.resource.data.usuarioId == request.auth.uid
+                      && request.resource.data.mesaId is string
+                      && exists(/databases/$(database)/documents/locales/$(localId)/mesas/$(request.resource.data.mesaId))
+                      && request.resource.data.destino in ['cocina', 'camarero']
+                      && (
+                        (request.resource.data.destino == 'cocina'
+                         && request.resource.data.estado == 'en_cocina')
+                        || (request.resource.data.destino == 'camarero'
+                            && request.resource.data.estado == 'para_camarero')
+                      );
+        allow update: if sameLocal(localId) && (
+                        isAdmin()
+                        || waiterCanUpdateComanda()
+                        || cookCanUpdateComanda()
+                      );
         allow delete: if isAdmin() && sameLocal(localId);
       }
 
-      // Facturas: camarero/admin crean al cobrar. Solo admin edita/borra
-      // (función "editar ticket" del panel de finanzas).
+      // Facturas: se atribuyen al usuario que las crea y a una mesa existente.
+      // Solo administración puede rectificar o eliminar el historial de caja.
       match /facturas/{facturaId} {
         allow read:           if isStaff() && sameLocal(localId);
-        allow create:         if (isAdmin() || isCamarero()) && sameLocal(localId);
+        allow create: if (isAdmin() || isCamarero())
+                      && sameLocal(localId)
+                      && request.resource.data.usuarioId == request.auth.uid
+                      && request.resource.data.mesaId is string
+                      && exists(/databases/$(database)/documents/locales/$(localId)/mesas/$(request.resource.data.mesaId))
+                      && request.resource.data.metodoPago in ['efectivo', 'tarjeta']
+                      && request.resource.data.total is number
+                      && request.resource.data.total >= 0;
         allow update, delete: if isAdmin() && sameLocal(localId);
       }
       
-      // Reservas: cualquier staff crea y lee; staff puede cambiar estado
-      // (confirmar, cancelar, marcar cumplida). Solo admin borra.
+      // Reservas: camarero y admin pueden crearlas; el camarero solo gestiona
+      // su estado. Cocina no accede a datos personales de clientes.
       match /reservas/{reservaId} {
         allow read:   if isStaff() && sameLocal(localId);
-        allow create: if isStaff() && sameLocal(localId);
-        allow update: if isStaff() && sameLocal(localId);
+        allow create: if (isAdmin() || isCamarero())
+                      && sameLocal(localId)
+                      && request.resource.data.estado == 'pendiente'
+                      && request.resource.data.nombre is string
+                      && request.resource.data.personas is number
+                      && request.resource.data.personas > 0
+                      && request.resource.data.mesaId is string;
+        allow update: if sameLocal(localId) && (
+                        isAdmin()
+                        || (isCamarero()
+                            && request.resource.data.diff(resource.data).affectedKeys()
+                                 .hasOnly(['estado'])
+                            && request.resource.data.estado in [
+                                 'pendiente', 'confirmada', 'cancelada', 'cumplida'
+                               ])
+                      );
         allow delete: if isAdmin() && sameLocal(localId);
       }
     }
