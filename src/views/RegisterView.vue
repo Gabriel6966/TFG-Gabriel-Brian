@@ -104,7 +104,10 @@ const completarRegistro = async () => {
         rol: invitacionData.value.rol,
         localId: invitacionData.value.localId,
         activo: true,
-        creadoEn: new Date()
+        creadoEn: new Date(),
+        // La regla valida este enlace contra la invitación consumida en el
+        // mismo batch; no se modifica posteriormente.
+        invitacionId: invitacionId.value
       })
       batch.update(doc(db, 'invitaciones', invitacionId.value), {
         estado: 'usada',

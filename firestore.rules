@@ -51,6 +51,20 @@ service cloud.firestore {
       return isActive() && myProfile().localId == localId;
     }
 
+    // El perfil y la invitación se escriben en un único batch durante el alta.
+    // get() comprueba que la invitación era válida y getAfter() que se consume
+    // para el mismo usuario dentro de esa operación atómica.
+    function validRegistration(profile) {
+      return profile.invitacionId is string
+             && exists(/databases/$(database)/documents/invitaciones/$(profile.invitacionId))
+             && get(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.estado == 'pendiente'
+             && profile.email == get(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.email
+             && profile.rol == get(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.rol
+             && profile.localId == get(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.localId
+             && getAfter(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.estado == 'usada'
+             && getAfter(/databases/$(database)/documents/invitaciones/$(profile.invitacionId)).data.usadoPor == request.auth.uid;
+    }
+
     // ── USUARIOS ────────────────────────────────────────────────
     match /usuarios/{uid} {
       // El propio usuario siempre puede leer su perfil (necesario para login
@@ -70,11 +84,15 @@ service cloud.firestore {
       // o se vincule a otro local sin invitación.
       allow create: if isSignedIn()
                     && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly([
+                         'nombre', 'email', 'rol', 'localId', 'activo', 'creadoEn', 'invitacionId'
+                       ])
                     && request.resource.data.activo == true
                     && request.resource.data.rol in ['admin', 'camarero', 'cocinero']
                     && request.resource.data.localId is string
                     && request.resource.data.email is string
-                    && request.resource.data.nombre is string;
+                    && request.resource.data.nombre is string
+                    && validRegistration(request.resource.data);
 
       // Actualización: el propio usuario solo puede cambiar su nombre.
       // Un admin del mismo local puede cambiar `activo` y `rol`.
@@ -115,16 +133,25 @@ service cloud.firestore {
                     && request.resource.data.estado == 'pendiente'
                     && request.resource.data.rol in ['admin', 'camarero', 'cocinero']
                     && request.resource.data.codigo is string
+                    && invId == request.resource.data.codigo
+                    && request.resource.data.codigo.matches('^[A-Z0-9]{8}$')
                     && request.resource.data.email is string;
 
       // Marcar como usada durante el registro (puede no haber sesión aún:
       // /register actualiza la invitación justo después del createUser, en ese
       // momento ya hay auth.uid pero no /usuarios/{uid}).
       // Solo permitimos la transición pendiente→usada y campos concretos.
-      allow update: if resource.data.estado == 'pendiente'
+      allow update: if isSignedIn()
+                    && resource.data.estado == 'pendiente'
                     && request.resource.data.estado == 'usada'
                     && request.resource.data.diff(resource.data).affectedKeys()
-                         .hasOnly(['estado', 'usadoPor', 'usadoEn']);
+                         .hasOnly(['estado', 'usadoPor', 'usadoEn'])
+                    && request.resource.data.usadoPor == request.auth.uid
+                    && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.invitacionId == invId
+                    && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.email == resource.data.email
+                    && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == resource.data.rol
+                    && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.localId == resource.data.localId
+                    && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.activo == true;
 
       // Borrar: admin del mismo local.
       allow delete: if isAdmin()
